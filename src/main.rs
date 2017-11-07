@@ -16,6 +16,11 @@ pub trait Continuation<V>: 'static {
     fn map<F, V2>(self, map: F) -> Map<Self, F> where Self: Sized, F: FnOnce(V2) -> V + 'static {
         Map { continuation: self, map }
     }
+
+    /// Creates a new continuation that waits for the next instant to call `Self`.
+    fn pause(self) -> Pause<Self> where Self: Sized {
+        Pause { continuation: self }
+    }
 }
 
 
@@ -133,7 +138,7 @@ impl Runtime {
 
 
 
-fn main() {
+fn main2() {
     println!("Hello, world!");
     let continuation_42 = |r: &mut Runtime, v: ()| {
         r.on_next_instant(Box::new(|r: &mut Runtime, v: ()| {
@@ -148,6 +153,21 @@ fn main() {
 
     r.on_current_instant(Box::new(continuation_42));
     r.execute();
+    println!("Starting");
+    r.instant();
+    println!("end of instant 1");
+    r.instant();
+    println!("end of instant 2");
+    r.instant();
+    println!("end of instant 3");
+}
+
+fn main() {
+    let c = (|r: &mut Runtime, ()| { println!("42") })
+        .pause().pause();
+
+    let mut r = Runtime::new();
+    r.on_current_instant(Box::new(c));
     println!("Starting");
     r.instant();
     println!("end of instant 1");
