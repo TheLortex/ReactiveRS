@@ -15,8 +15,15 @@ pub trait Process: 'static {
 
     /// Creates a new process that applies a function to the output value of `Self`.
     fn map<F, V2>(self, map: F) -> Map<Self, F>
-        where Self: Sized, F: FnOnce(Self::Value) -> V2 + 'static {
+        where Self: Sized, F: FnOnce(Self::Value) -> V2 + 'static
+    {
         Map { process: self, map }
+    }
+
+    fn and_then<F, P>(self, function: F) -> P
+        where F:FnOnce(Self::Value) -> P, P:Process
+    {
+        self.map(function).flatten();
     }
 }
 
