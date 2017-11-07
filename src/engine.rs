@@ -1,3 +1,5 @@
+use std;
+
 /// A reactive continuation awaiting a value of type `V`. For the sake of simplicity,
 /// continuation must be valid on the static lifetime.
 pub trait Continuation<V>: 'static {
@@ -133,26 +135,33 @@ impl Runtime {
 
 
 
-fn main() {
-    println!("Hello, world!");
-    let continuation_42 = |r: &mut Runtime, v: ()| {
-        r.on_next_instant(Box::new(|r: &mut Runtime, v: ()| {
-            r.on_next_instant(Box::new(|r: &mut Runtime, v: ()| {
-                println!("42");
-            }));
-        }));
-    };
-    let mut r = Runtime::new();
-//    r.on_current_instant(Box::new(continuation_42));
-//    r.execute();
+#[cfg(test)]
+mod tests {
+    use engine;
 
-    r.on_current_instant(Box::new(continuation_42));
-    r.execute();
-    println!("Starting");
-    r.instant();
-    println!("end of instant 1");
-    r.instant();
-    println!("end of instant 2");
-    r.instant();
-    println!("end of instant 3");
+    #[test]
+    fn test_42() {
+        println!("Hello, world!");
+
+        let continuation_42 = |r: &mut engine::Runtime, v: ()| {
+            r.on_next_instant(Box::new(|r: &mut engine::Runtime, v: ()| {
+                r.on_next_instant(Box::new(|r: &mut engine::Runtime, v: ()| {
+                    println!("42");
+                }));
+            }));
+        };
+        let mut r = engine::Runtime::new();
+        //    r.on_current_instant(Box::new(continuation_42));
+        //    r.execute();
+
+        r.on_current_instant(Box::new(continuation_42));
+        r.execute();
+        println!("Starting");
+        r.instant();
+        println!("end of instant 1");
+        r.instant();
+        println!("end of instant 2");
+        r.instant();
+        println!("end of instant 3");
+    }
 }
