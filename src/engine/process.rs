@@ -12,6 +12,12 @@ pub trait Process: 'static {
     fn pause(self) -> Pause<Self> where Self: Sized {
         Pause {process: self}
     }
+
+    /// Creates a new process that applies a function to the output value of `Self`.
+    fn map<F, V2>(self, map: F) -> Map<Self, F>
+        where Self: Sized, F: FnOnce(Self::Value) -> V2 + 'static {
+        Map { process: self, map }
+    }
 }
 
 pub struct Value<V> {
@@ -45,4 +51,26 @@ impl<P> Process for Pause<P> where P: Process {
                 next.pause().call(runtime, value);
             });
     }
+}
+
+
+/// A process that applies a function to the output of a Process.
+pub struct Map<P, F> {
+    process: P,
+    map: F,
+}
+
+impl<P, F, V2> Process for Map<P, F>
+    where P: Process, F: FnOnce(P::Value) -> V2 + 'static
+{
+    type Value = V2;
+
+    fn call<C>(self, runtime: &mut Runtime, next: C) where C: Continuation<Self::Value> {
+        let map = self.map;
+        self.process.call(runtime,
+                          |r: &mut Runtime, v: P::Value| {
+                              next.call(r, map(v));
+        });
+    }
+
 }
