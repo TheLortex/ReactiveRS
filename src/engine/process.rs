@@ -18,6 +18,12 @@ pub trait Process: 'static {
         where Self: Sized, F: FnOnce(Self::Value) -> V2 + 'static {
         Map { process: self, map }
     }
+
+    /// Creates a new process that executes the process returned by `Self`.
+    fn flatten<>(self) -> Flatten<Self>
+        where Self: Sized, Self::Value: Process {
+        Flatten { process: self }
+    }
 }
 
 pub struct Value<V> {
@@ -73,4 +79,22 @@ impl<P, F, V2> Process for Map<P, F>
         });
     }
 
+}
+
+
+/// A process that executes the process returned by a Process.
+pub struct Flatten<P> {
+    process: P,
+}
+
+impl<P> Process for Flatten<P>
+    where P: Process, P::Value: Process
+{
+    type Value = <P::Value as Process>::Value;
+
+    fn call<C>(self, runtime: &mut Runtime, next: C) where C: Continuation<Self::Value> {
+        self.process.call(runtime, |r: &mut Runtime, v: P::Value|{
+           v.call(r, next);
+        });
+    }
 }
