@@ -1,3 +1,5 @@
+use std;
+
 /// A reactive continuation awaiting a value of type `V`. For the sake of simplicity,
 /// continuation must be valid on the static lifetime.
 pub trait Continuation<V>: 'static {
@@ -138,41 +140,49 @@ impl Runtime {
 
 
 
-fn main2() {
-    println!("Hello, world!");
-    let continuation_42 = |r: &mut Runtime, v: ()| {
-        r.on_next_instant(Box::new(|r: &mut Runtime, v: ()| {
+#[cfg(test)]
+mod tests {
+    use engine::{Runtime, Continuation};
+
+    #[test]
+    fn test_42() {
+        println!("Hello, world!");
+
+        let continuation_42 = |r: &mut Runtime, v: ()| {
             r.on_next_instant(Box::new(|r: &mut Runtime, v: ()| {
-                println!("42");
+                r.on_next_instant(Box::new(|r: &mut Runtime, v: ()| {
+                    println!("42");
+                }));
             }));
-        }));
-    };
-    let mut r = Runtime::new();
-//    r.on_current_instant(Box::new(continuation_42));
-//    r.execute();
+        };
+        let mut r = Runtime::new();
+        //    r.on_current_instant(Box::new(continuation_42));
+        //    r.execute();
 
-    r.on_current_instant(Box::new(continuation_42));
-    r.execute();
-    println!("Starting");
-    r.instant();
-    println!("end of instant 1");
-    r.instant();
-    println!("end of instant 2");
-    r.instant();
-    println!("end of instant 3");
-}
+        r.on_current_instant(Box::new(continuation_42));
+        r.execute();
+        println!("Starting");
+        r.instant();
+        println!("end of instant 1");
+        r.instant();
+        println!("end of instant 2");
+        r.instant();
+        println!("end of instant 3");
+    }
 
-fn main() {
-    let c = (|r: &mut Runtime, ()| { println!("42") })
-        .pause().pause();
+    #[test]
+    fn test_pause() {
+        let c = (|r: &mut Runtime, ()| { println!("42") })
+            .pause().pause();
 
-    let mut r = Runtime::new();
-    r.on_current_instant(Box::new(c));
-    println!("Starting");
-    r.instant();
-    println!("end of instant 1");
-    r.instant();
-    println!("end of instant 2");
-    r.instant();
-    println!("end of instant 3");
+        let mut r = Runtime::new();
+        r.on_current_instant(Box::new(c));
+        println!("Starting");
+        r.instant();
+        println!("end of instant 1");
+        r.instant();
+        println!("end of instant 2");
+        r.instant();
+        println!("end of instant 3");
+    }
 }
