@@ -1,6 +1,7 @@
 use super::Runtime;
 use super::continuation::Continuation;
 
+
 /// A reactive process.
 pub trait Process: 'static {
     /// The value created by the process.
@@ -33,6 +34,7 @@ pub trait Process: 'static {
     }
 }
 
+
 pub struct Value<V> {
     value: V,
 }
@@ -46,7 +48,7 @@ impl<V> Process for Value<V> where V: 'static {
 }
 
 impl<V> Value<V> where V: 'static{
-    fn new(v: V) -> Self {
+    pub fn new(v: V) -> Self {
         Value {value: v}
     }
 }

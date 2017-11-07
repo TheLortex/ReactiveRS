@@ -3,6 +3,7 @@ mod process;
 
 use std;
 use self::continuation::Continuation;
+use self::process::Process;
 
 /// Runtime for executing reactive continuations.
 pub struct Runtime {
@@ -27,6 +28,7 @@ impl Runtime {
 
     /// Executes a single instant to completion. Indicates if more work remains to be done.
     pub fn instant(&mut self) -> bool {
+        print!("-");
         // We first execute all the continuations of the instant.
         while let Some(c) = self.cur_instant.pop() {
             c.call_box(self, ());
@@ -63,15 +65,31 @@ impl Runtime {
     }
 }
 
+use std::cell::Cell;
+use std::rc::Rc;
+
+pub fn execute_process<P>(process: P) -> P::Value where P:Process {
+    let mut r = Runtime::new();
+    let bonjour: Rc<Cell<Option<P::Value>>> = Rc::new(Cell::new(None));
+    let bonjour2 = bonjour.clone();
+    process.call(&mut r, move|runtime: &mut Runtime, value: P::Value| {
+        bonjour2.set(Some(value));
+    });
+    r.execute();
+    bonjour.take().unwrap()
+}
 
 
 #[cfg(test)]
 mod tests {
     use engine::{Runtime, Continuation};
+    use engine::process::Process;
+    use engine::process;
+    use engine;
 
     #[test]
     fn test_42() {
-        println!("Hello, world!");
+        println!("==> test_42");
 
         let continuation_42 = |r: &mut Runtime, v: ()| {
             r.on_next_instant(Box::new(|r: &mut Runtime, v: ()| {
@@ -86,28 +104,37 @@ mod tests {
 
         r.on_current_instant(Box::new(continuation_42));
         r.execute();
-        println!("Starting");
         r.instant();
-        println!("end of instant 1");
         r.instant();
-        println!("end of instant 2");
         r.instant();
-        println!("end of instant 3");
+        println!("<== test_42");
+
     }
 
     #[test]
     fn test_pause() {
+        println!("==> test_pause");
+
         let c = (|r: &mut Runtime, ()| { println!("42") })
             .pause().pause();
 
         let mut r = Runtime::new();
         r.on_current_instant(Box::new(c));
-        println!("Starting");
         r.instant();
-        println!("end of instant 1");
         r.instant();
-        println!("end of instant 2");
         r.instant();
-        println!("end of instant 3");
+
+        println!("<== test_pause");
+    }
+
+    #[test]
+    fn test_process() {
+        println!("==> test_process");
+
+        let p = process::Value::new(42);
+        let program = p.pause().pause().map(|x| {println!("{}", x)});
+        engine::execute_process(program);
+
+        println!("<== test_process");
     }
 }
