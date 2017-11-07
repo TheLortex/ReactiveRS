@@ -26,10 +26,10 @@ pub trait Process: 'static {
         Flatten { process: self }
     }
 
-    fn and_then<F, P>(self, function: F) -> P
-        where F:FnOnce(Self::Value) -> P, P:Process
+    fn and_then<F, P>(self, function: F) -> AndThen<Self, F>
+        where F: FnOnce(Self::Value) -> P + 'static, Self: Sized, P: Process
     {
-        self.map(function).flatten();
+        self.map(function).flatten()
     }
 }
 
@@ -105,3 +105,6 @@ impl<P> Process for Flatten<P>
         });
     }
 }
+
+
+type AndThen<P, F> = Flatten<Map<P, F>>;
