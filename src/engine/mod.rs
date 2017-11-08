@@ -70,13 +70,13 @@ use std::rc::Rc;
 
 pub fn execute_process<P>(process: P) -> P::Value where P:Process {
     let mut r = Runtime::new();
-    let bonjour: Rc<Cell<Option<P::Value>>> = Rc::new(Cell::new(None));
-    let bonjour2 = bonjour.clone();
+    let result: Rc<Cell<Option<P::Value>>> = Rc::new(Cell::new(None));
+    let result2 = result.clone();
     process.call(&mut r, move|runtime: &mut Runtime, value: P::Value| {
-        bonjour2.set(Some(value));
+        result2.set(Some(value));
     });
     r.execute();
-    bonjour.take().unwrap()
+    result.take().unwrap()
 }
 
 
@@ -86,6 +86,9 @@ mod tests {
     use engine::process::Process;
     use engine::process;
     use engine;
+
+    use std::rc::Rc;
+    use std::cell::Cell;
 
     #[test]
     fn test_42() {
@@ -132,9 +135,46 @@ mod tests {
         println!("==> test_process");
 
         let p = process::Value::new(42);
-        let program = p.pause().pause().map(|x| {println!("{}", x)});
-        engine::execute_process(program);
+        let program = p.pause().pause().map(|x| {println!("{}", x); x+4 });
+        assert_eq!(engine::execute_process(program), 46);
 
         println!("<== test_process");
+    }
+
+    #[test]
+    fn test_flatten() {
+        let p = process::Value::new(42);
+        let p2 = process::Value::new(p);
+        assert_eq!(engine::execute_process(p2.flatten()), 42);
+    }
+
+    #[test]
+    fn test_and_then() {
+        let p = process::Value::new(42).pause();
+        let f = |x| {
+            process::Value::new(x + 42)
+        };
+        assert_eq!(engine::execute_process(p.and_then(f)), 84);
+    }
+
+    #[test]
+    fn test_join() {
+        let reward = Rc::new(Cell::new(Some(42)));
+        let reward2 = reward.clone();
+
+        let p = process::Value::new(reward).pause().pause().pause().pause()
+            .map(|v| {
+                let v = v.take();
+                println!("Process p {:?}", v);
+                v
+            });
+        let q = process::Value::new(reward2).pause().pause().pause()
+            .map(|v| {
+                let v = v.take();
+                println!("Process q {:?}", v);
+                v
+            });
+
+        assert_eq!((None, Some(42)), engine::execute_process(p.join(q)));
     }
 }

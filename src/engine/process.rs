@@ -1,5 +1,7 @@
 use super::Runtime;
 use super::continuation::Continuation;
+use std::cell::Cell;
+use std::rc::Rc;
 
 
 /// A reactive process.
@@ -27,10 +29,18 @@ pub trait Process: 'static {
         Flatten { process: self }
     }
 
+
+    /// Creates a new process that executes the first process, applies the given function to the
+    /// result, and executes the returned process.
     fn and_then<F, P>(self, function: F) -> AndThen<Self, F>
-        where F: FnOnce(Self::Value) -> P + 'static, Self: Sized, P: Process
-    {
+        where F: FnOnce(Self::Value) -> P + 'static, Self: Sized, P: Process {
         self.map(function).flatten()
+    }
+
+    /// Creates a new process that executes the two processes in parallel, and returns the couple of
+    /// their return values.
+    fn join<P>(self, process: P) -> Join<Self, P> where Self: Sized, P: Sized {
+        Join {process1: self, process2: process}
     }
 }
 
@@ -110,3 +120,51 @@ impl<P> Process for Flatten<P>
 
 
 type AndThen<P, F> = Flatten<Map<P, F>>;
+
+
+/// A process that executes two processes in parallel, and returns both values.
+pub struct Join<P, Q> {
+    process1: P,
+    process2: Q,
+}
+
+pub struct JoinPoint<V1, V2, C> where C: Continuation<(V1, V2)> {
+    v1: Cell<Option<V1>>,
+    v2: Cell<Option<V2>>,
+    continuation: Cell<Option<C>>,
+}
+
+impl<P, Q> Process for Join<P, Q>
+    where P: Process, Q: Process
+{
+    type Value = (P::Value, Q::Value);
+
+    fn call<C>(self, runtime: &mut Runtime, next: C) where C: Continuation<Self::Value>, C: Sized {
+        let join_point = Rc::new(JoinPoint {
+            v1: Cell::new(None), v2: Cell::new(None), continuation: Cell::new(Some(next)),
+        });
+        let join_point2 = join_point.clone();
+        let c1 = move |runtime: &mut Runtime, v1: P::Value| {
+            let v2 = join_point.v2.take();
+
+            if let Some(v2) = v2 {
+                join_point.continuation.take().unwrap().call(runtime, (v1, v2));
+            }
+            else {
+                join_point.v1.set(Some(v1));
+            }
+        };
+        let c2 = move |runtime: &mut Runtime, v2: Q::Value| {
+            let v1 = join_point2.v1.take();
+
+            if let Some(v1) = v1 {
+                join_point2.continuation.take().unwrap().call(runtime, (v1, v2));
+            }
+                else {
+                    join_point2.v2.set(Some(v2));
+                }
+        };
+        self.process1.call(runtime, c1);
+        self.process2.call(runtime, c2);
+    }
+}
