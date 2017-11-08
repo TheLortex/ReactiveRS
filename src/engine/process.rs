@@ -71,7 +71,7 @@ pub struct Value<V> {
     value: V,
 }
 
-impl<V> Value<V> where V: 'static{
+impl<V> Value<V> where V: 'static {
     pub fn new(v: V) -> Self {
         Value {value: v}
     }
@@ -297,6 +297,213 @@ impl<P, V> ProcessMut for While<P> where P: ProcessMut, P: Process<Value=LoopSta
             match v {
                 LoopStatus::Continue => p.loop_while().call_mut(runtime, next),
                 LoopStatus::Exit(v) => next.call(runtime, (p.loop_while(), v)),
+            }
+        });
+    }
+}
+
+
+use std::cell::RefCell;
+/// A shared pointer to a signal runtime.
+#[derive(Clone)]
+pub struct SignalRuntimeRef {
+    runtime: Rc<RefCell<SignalRuntime>>,
+}
+
+/// Runtime for pure signals.
+struct SignalRuntime {
+    present: bool,
+    waiting: Vec<Box<Continuation<()>>>,
+    testing_present: Vec<Box<Continuation<bool>>>,
+}
+
+impl SignalRuntimeRef {
+    /// Sets the signal as emitted for the current instant.
+    fn emit(self, runtime: &mut Runtime) {
+        let mut sig_runtime = self.runtime.borrow_mut();
+        if !sig_runtime.present {
+            sig_runtime.present = true;
+            while let Some(c) = sig_runtime.waiting.pop() {
+                runtime.on_current_instant(c);
+            }
+            while let Some(c) = sig_runtime.testing_present.pop() {
+                runtime.on_current_instant(Box::new(move |r: &mut Runtime, ()| {
+                    c.call_box(r, true);
+                }));
+            }
+            let sig_runtime_ref = self.clone();
+            let c = move |r: &mut Runtime, ()| {
+                sig_runtime_ref.runtime.borrow_mut().present = false;
+            };
+            runtime.on_end_of_instant(Box::new(c));
+        }
+    }
+
+    /// Calls `c` at the first cycle where the signal is present.
+    fn on_signal<C>(self, runtime: &mut Runtime, c: C) where C: Continuation<()> {
+        if self.runtime.borrow().present {
+            c.call(runtime, ());
+        }
+        else {
+            self.runtime.borrow_mut().waiting.push(Box::new(c));
+        }
+    }
+
+    /// Calls `c` with the boolean which indicates if the signal is present.
+    fn present<C>(self, runtime: &mut Runtime, c: C)
+        where C: Continuation<bool>
+    {
+        if self.runtime.borrow().present {
+            c.call(runtime, true);
+        } else {
+            self.runtime.borrow_mut().testing_present.push(Box::new(c));
+            let sig_runtime_ref = self.clone();
+            let c = move |r: &mut Runtime, ()| {
+                let mut sig_runtime = sig_runtime_ref.runtime.borrow_mut();
+                while let Some(c) = sig_runtime.testing_present.pop() {
+                    r.on_current_instant(Box::new(|r: &mut Runtime, ()| {
+                        c.call_box(r, false);
+                    }));
+                }
+            };
+            runtime.on_end_of_instant(Box::new(c));
+        }
+    }
+}
+
+
+/// A reactive signal.
+pub trait Signal {
+    /// Returns a reference to the signal's runtime.
+    fn runtime(self) -> SignalRuntimeRef;
+
+    /// Returns a process that waits for the next emission of the signal, current instant
+    /// included.
+    fn await_immediate(self) -> AwaitImmediate where Self: Sized {
+        AwaitImmediate { signal: self.runtime() }
+    }
+
+    // TODO: add other methods if needed.
+}
+
+#[derive(Clone)]
+pub struct AwaitImmediate {
+    signal: SignalRuntimeRef,
+}
+
+impl Process for AwaitImmediate {
+    type Value = ();
+
+    fn call<C>(self, runtime: &mut Runtime, next: C) where C: Continuation<Self::Value> {
+        self.signal.on_signal(runtime, next);
+    }
+}
+
+impl ProcessMut for AwaitImmediate {
+    fn call_mut<C>(self, runtime: &mut Runtime, next: C)
+        where Self: Sized, C: Continuation<(Self, Self::Value)>
+    {
+        let signal = self.signal.clone();
+        self.signal.on_signal(runtime, move |r: &mut Runtime, ()| {
+            next.call(r, (AwaitImmediate { signal }, ()))
+        });
+    }
+}
+
+#[derive(Clone)]
+pub struct PureSignal {
+    signal: SignalRuntimeRef,
+}
+
+impl PureSignal {
+    pub fn new() -> PureSignal {
+        let runtime = SignalRuntime { present: false, waiting: vec!(), testing_present: vec!() };
+        PureSignal {signal: SignalRuntimeRef { runtime: Rc::new(RefCell::new(runtime)) }}
+    }
+
+    pub fn emit(self) -> Emit {
+        Emit { signal: self.runtime() }
+    }
+
+    pub fn present<P, Q, V>(self, p: P, q: Q) -> Present<P, Q>
+        where P: Process<Value=V>, Q: Process<Value=V>
+    {
+        Present { signal: self.runtime(), process1: p, process2: q }
+    }
+}
+
+impl Signal for PureSignal {
+    fn runtime(self) -> SignalRuntimeRef {
+        self.signal.clone()
+    }
+}
+
+#[derive(Clone)]
+pub struct Emit {
+    signal: SignalRuntimeRef,
+}
+
+impl Process for Emit {
+    type Value = ();
+
+    fn call<C>(self, runtime: &mut Runtime, next: C) where C: Continuation<Self::Value> {
+        self.signal.emit(runtime);
+        next.call(runtime, ());
+    }
+}
+
+impl ProcessMut for Emit {
+    fn call_mut<C>(self, runtime: &mut Runtime, next: C)
+        where Self: Sized, C: Continuation<(Self, Self::Value)>
+    {
+        let copy = self.clone();
+        self.signal.emit(runtime);
+        next.call(runtime, (copy, ()));
+    }
+}
+
+pub struct Present<P, Q> {
+    signal: SignalRuntimeRef,
+    process1: P,
+    process2: Q,
+}
+
+impl<P, Q, V> Process for Present<P, Q> where P: Process<Value=V>, Q: Process<Value=V> {
+    type Value = V;
+
+    fn call<C>(self, runtime: &mut Runtime, next: C) where C: Continuation<Self::Value> {
+        let signal = self.signal.clone();
+        signal.present(runtime, move |r: &mut Runtime, present: bool| {
+            if present {
+                self.process1.call(r, next);
+            }
+            else {
+                self.process2.call(r, next);
+            }
+        });
+    }
+}
+
+impl<P, Q, V> ProcessMut for Present<P, Q>
+    where P: Process<Value=V> + ProcessMut, Q: Process<Value=V> + ProcessMut
+{
+    fn call_mut<C>(self, runtime: &mut Runtime, next: C)
+        where Self: Sized, C: Continuation<(Self, Self::Value)>
+    {
+        let signal = self.signal.clone();
+        let signal2 = self.signal.clone();
+        signal.present(runtime, move |r: &mut Runtime, present: bool| {
+            if present {
+                let q = self.process2;
+                self.process1.get_mut().map(move |(p, v)| {
+                    (Present { signal: signal2, process1: p, process2: q }, v)
+                }).call(r, next);
+            }
+            else {
+                let p = self.process1;
+                self.process2.get_mut().map(move |(q, v)| {
+                    (Present { signal: signal2, process1: p, process2: q }, v)
+                }).call(r, next);
             }
         });
     }

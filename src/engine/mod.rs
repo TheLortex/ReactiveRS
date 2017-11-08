@@ -83,7 +83,7 @@ pub fn execute_process<P>(process: P) -> P::Value where P:Process {
 #[cfg(test)]
 mod tests {
     use engine::{Runtime, Continuation};
-    use engine::process::{Process, LoopStatus, ProcessMut};
+    use engine::process::{Process, LoopStatus, ProcessMut, Signal, PureSignal};
     use engine::process;
     use engine;
 
@@ -182,7 +182,7 @@ mod tests {
     fn test_loop_while() {
         println!("==> test_loop_while");
         let mut x = 10;
-        let mut c = move |_| {
+        let c = move |_| {
             x -= 1;
             if x == 0 {
                 LoopStatus::Exit(42)
@@ -200,7 +200,7 @@ mod tests {
 
         let mut tot1 = 0;
         let mut tot2 = 0;
-        let mut c1 = move |_| {
+        let c1 = move |_| {
             let v = reward.take().unwrap();
             reward.set(Some(v-1));
             if v <= 0 {
@@ -210,7 +210,7 @@ mod tests {
                 LoopStatus::Continue
             }
         };
-        let mut c2 = move |_| {
+        let c2 = move |_| {
             let v = reward2.take().unwrap();
             reward2.set(Some(v-1));
             if v <= 0 {
@@ -235,5 +235,41 @@ mod tests {
         let m = n / 2;
         assert_eq!((m * (m + 1), m * m), engine::execute_process(pbis.join(qbis)));
         println!("<== test_loop_while");
+    }
+
+    #[test]
+    #[ignore]
+    fn test_pure_signal() {
+        let s = PureSignal::new();
+        let s2 = s.clone();
+        let s3 = s.clone();
+        let c1: fn(()) -> LoopStatus<()> = |_| {
+            println!("s sent");
+            LoopStatus::Continue
+        };
+        let p1 = s.emit().pause().pause().pause()
+            .map(c1).loop_while();
+        let c21 = |_| {
+            println!("present");
+            ()
+        };
+        let p21 = process::Value::new(()).map(c21).pause();
+        let c22 = |_| {
+            println!("not present");
+            ()
+        };
+        let p22 = process::Value::new(()).map(c22);
+        let c2: fn(()) -> LoopStatus<()> = |_| { LoopStatus::Continue };
+        let p2 = s2.present(p21, p22)
+            .map(c2).loop_while();
+        let c3: fn(()) -> LoopStatus<()> = |_| {
+            println!("s received");
+            LoopStatus::Continue
+        };
+        let p3 = s3.await_immediate().map(c3).pause().loop_while();
+
+        let p = p1.join(p2.join(p3));
+
+        engine::execute_process(p);
     }
 }
