@@ -83,7 +83,7 @@ pub fn execute_process<P>(process: P) -> P::Value where P:Process {
 #[cfg(test)]
 mod tests {
     use engine::{Runtime, Continuation};
-    use engine::process::Process;
+    use engine::process::{Process, LoopStatus, ProcessMut};
     use engine::process;
     use engine;
 
@@ -176,5 +176,64 @@ mod tests {
             });
 
         assert_eq!((None, Some(42)), engine::execute_process(p.join(q)));
+    }
+
+    #[test]
+    fn test_loop_while() {
+        println!("==> test_loop_while");
+        let mut x = 10;
+        let mut c = move |_| {
+            x -= 1;
+            if x == 0 {
+                LoopStatus::Exit(42)
+            }
+                else {
+                    LoopStatus::Continue
+                }
+        };
+        let p = process::Value::new(()).map(c);
+        assert_eq!(42, engine::execute_process(p.pause().loop_while()));
+
+        let n = 10;
+        let reward = Rc::new(Cell::new(Some(n)));
+        let reward2 = reward.clone();
+
+        let mut tot1 = 0;
+        let mut tot2 = 0;
+        let mut c1 = move |_| {
+            let v = reward.take().unwrap();
+            reward.set(Some(v-1));
+            if v <= 0 {
+                LoopStatus::Exit(tot1)
+            } else {
+                tot1 += v;
+                LoopStatus::Continue
+            }
+        };
+        let mut c2 = move |_| {
+            let v = reward2.take().unwrap();
+            reward2.set(Some(v-1));
+            if v <= 0 {
+                process::Value::new(LoopStatus::Exit(tot2))
+            } else {
+                tot2 += v;
+                process::Value::new(LoopStatus::Continue)
+            }
+        };
+
+        let p = process::Value::new(()).pause().pause()
+            .map(c1);
+        let q = process::Value::new(()).pause().pause()
+            .and_then(c2);
+
+        let pbis = p.loop_while();
+        let qloop = q.loop_while();
+        let qbis = process::Value::new(()).pause().and_then(|_| {
+            qloop
+        });
+
+        let m = n / 2;
+        assert_eq!((m * (m + 1), m * m), engine::execute_process(pbis.join(qbis)));
+        println!("<== test_loop_while");
     }
 }

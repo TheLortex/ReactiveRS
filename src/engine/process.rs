@@ -45,8 +45,36 @@ pub trait Process: 'static {
 }
 
 
+/// A process that can be executed multiple times, modifying its environment each time.
+pub trait ProcessMut: Process {
+    /// Executes the mutable process in the runtime, then calls `next` with the process and the
+    /// process's return value.
+    fn call_mut<C>(self, runtime: &mut Runtime, next: C)
+        where Self: Sized, C: Continuation<(Self, Self::Value)>;
+
+    /// Creates a process that executes once the ProcessMut, and returns it with the obtained value.
+    fn get_mut(self) -> Mut<Self> where Self: Sized {
+        Mut { process: self }
+    }
+
+    /// Creates a process that executes a ProcessMut with return type LoopStatus until it returns
+    /// Exit(v).
+    fn loop_while(self) -> While<Self> where Self: Sized {
+        While { process: self }
+    }
+
+
+}
+
+
 pub struct Value<V> {
     value: V,
+}
+
+impl<V> Value<V> where V: 'static{
+    pub fn new(v: V) -> Self {
+        Value {value: v}
+    }
 }
 
 impl<V> Process for Value<V> where V: 'static {
@@ -57,11 +85,14 @@ impl<V> Process for Value<V> where V: 'static {
     }
 }
 
-impl<V> Value<V> where V: 'static{
-    pub fn new(v: V) -> Self {
-        Value {value: v}
+impl<V> ProcessMut for Value<V> where V: Copy + 'static {
+    fn call_mut<C>(self, runtime: &mut Runtime, next: C)
+        where Self: Sized, C: Continuation<(Self, Self::Value)> {
+        let v = self.value;
+        next.call(runtime, (self, v));
     }
 }
+
 
 pub struct Pause<P> {
     process: P,
@@ -75,6 +106,19 @@ impl<P> Process for Pause<P> where P: Process {
             |runtime: &mut Runtime, value: P::Value| {
                 next.pause().call(runtime, value);
             });
+    }
+}
+
+impl<P> ProcessMut for Pause<P> where P: ProcessMut {
+    fn call_mut<C>(self, runtime: &mut Runtime, next: C)
+        where Self: Sized, C: Continuation<(Self, Self::Value)> {
+//        self.process.call_mut(runtime,
+//                          |runtime: &mut Runtime, (p, v): (P, P::Value)| {
+//                              next.pause().call(runtime, (p.pause(), v));
+//                          });
+        self.process.get_mut().map(|(p, v): (P, P::Value)| {
+            (p.pause(), v)
+        }).pause().call(runtime, next);
     }
 }
 
@@ -95,9 +139,23 @@ impl<P, F, V2> Process for Map<P, F>
         self.process.call(runtime,
                           |r: &mut Runtime, v: P::Value| {
                               next.call(r, map(v));
-        });
+                          });
     }
+}
 
+impl<P, F, V2> ProcessMut for Map<P, F>
+    where P: ProcessMut, F: FnMut(P::Value) -> V2 + 'static
+{
+    fn call_mut<C>(self, runtime: &mut Runtime, next: C)
+        where Self: Sized, C: Continuation<(Self, Self::Value)>
+    {
+        let mut map = self.map;
+        self.process.call_mut(runtime,
+                          move |r: &mut Runtime, (p, v): (P, P::Value)| {
+                              let v2 = map(v);
+                              next.call(r, (p.map(map), v2));
+                          });
+    }
 }
 
 
@@ -118,6 +176,19 @@ impl<P> Process for Flatten<P>
     }
 }
 
+impl<P> ProcessMut for Flatten<P>
+    where P: ProcessMut, P::Value: Process
+{
+    fn call_mut<C>(self, runtime: &mut Runtime, next: C)
+        where Self: Sized, C: Continuation<(Self, Self::Value)>
+    {
+        self.process.call_mut(runtime, |r: &mut Runtime, (p, v): (P, P::Value)|{
+            v.call(r, |runtime: &mut Runtime, result: Self::Value| {
+                next.call(runtime, (p.flatten(), result));
+            });
+        });
+    }
+}
 
 type AndThen<P, F> = Flatten<Map<P, F>>;
 
@@ -166,5 +237,53 @@ impl<P, Q> Process for Join<P, Q>
         };
         self.process1.call(runtime, c1);
         self.process2.call(runtime, c2);
+    }
+}
+
+impl<P, Q> ProcessMut for Join<P, Q> where P: ProcessMut, Q:ProcessMut {
+    fn call_mut<C>(self, runtime: &mut Runtime, next: C)
+        where Self: Sized, C: Continuation<(Self, Self::Value)>
+    {
+        self.process1.get_mut().join(self.process2.get_mut())
+            .map(|((p1, v1), (p2, v2))| {
+                (p1.join(p2), (v1, v2))
+            }).call(runtime, next);
+    }
+}
+
+
+/// A process that executes a ProcessMut once and returns it with the obtained value.
+pub struct Mut<P> {
+    process: P,
+}
+
+impl<P> Process for Mut<P> where P: ProcessMut {
+    type Value = (P, P::Value);
+
+    fn call<C>(self, runtime: &mut Runtime, next: C) where C: Continuation<Self::Value> {
+        self.process.call_mut(runtime, next);
+    }
+}
+
+
+/// Indicates if a loop is finished.
+pub enum LoopStatus<V> {
+    Continue, Exit(V)
+}
+
+pub struct While<P> {
+    process: P,
+}
+
+impl<P, V> Process for While<P> where P: ProcessMut, P: Process<Value=LoopStatus<V>> {
+    type Value = V;
+
+    fn call<C>(self, runtime: &mut Runtime, next: C) where C: Continuation<Self::Value> {
+        self.process.call_mut(runtime, |runtime: &mut Runtime, (p, v): (P, P::Value)| {
+            match v {
+                LoopStatus::Continue => p.loop_while().call(runtime, next),
+                LoopStatus::Exit(v) => next.call(runtime, v),
+            }
+        });
     }
 }
