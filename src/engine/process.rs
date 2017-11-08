@@ -287,3 +287,17 @@ impl<P, V> Process for While<P> where P: ProcessMut, P: Process<Value=LoopStatus
         });
     }
 }
+
+impl<P, V> ProcessMut for While<P> where P: ProcessMut, P: Process<Value=LoopStatus<V>> {
+
+    fn call_mut<C>(self, runtime: &mut Runtime, next: C)
+        where Self: Sized, C: Continuation<(Self, Self::Value)>
+    {
+        self.process.call_mut(runtime, |runtime: &mut Runtime, (p, v): (P, P::Value)| {
+            match v {
+                LoopStatus::Continue => p.loop_while().call_mut(runtime, next),
+                LoopStatus::Exit(v) => next.call(runtime, (p.loop_while(), v)),
+            }
+        });
+    }
+}
