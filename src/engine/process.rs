@@ -307,33 +307,35 @@ use std::cell::RefCell;
 /// A shared pointer to a signal runtime.
 #[derive(Clone)]
 pub struct SignalRuntimeRef {
-    runtime: Rc<RefCell<SignalRuntime>>,
+    runtime: Rc<SignalRuntime>,
 }
 
 /// Runtime for pure signals.
 struct SignalRuntime {
-    present: bool,
-    waiting: Vec<Box<Continuation<()>>>,
-    testing_present: Vec<Box<Continuation<bool>>>,
+    present: RefCell<bool>,
+    waiting_immediate: RefCell<Vec<Box<Continuation<()>>>>,
+    testing_present: RefCell<Vec<Box<Continuation<bool>>>>,
 }
 
 impl SignalRuntimeRef {
     /// Sets the signal as emitted for the current instant.
     fn emit(self, runtime: &mut Runtime) {
-        let mut sig_runtime = self.runtime.borrow_mut();
-        if !sig_runtime.present {
-            sig_runtime.present = true;
-            while let Some(c) = sig_runtime.waiting.pop() {
+        let mut present = self.runtime.present.borrow_mut();
+        if !*present {
+            *present = true;
+            let mut waiting_immediate = self.runtime.waiting_immediate.borrow_mut();
+            while let Some(c) = waiting_immediate.pop() {
                 runtime.on_current_instant(c);
             }
-            while let Some(c) = sig_runtime.testing_present.pop() {
+            let mut testing_present = self.runtime.testing_present.borrow_mut();
+            while let Some(c) = testing_present.pop() {
                 runtime.on_current_instant(Box::new(move |r: &mut Runtime, ()| {
                     c.call_box(r, true);
                 }));
             }
             let sig_runtime_ref = self.clone();
             let c = move |r: &mut Runtime, ()| {
-                sig_runtime_ref.runtime.borrow_mut().present = false;
+                *sig_runtime_ref.runtime.present.borrow_mut() = false;
             };
             runtime.on_end_of_instant(Box::new(c));
         }
@@ -341,11 +343,11 @@ impl SignalRuntimeRef {
 
     /// Calls `c` at the first cycle where the signal is present.
     fn on_signal<C>(self, runtime: &mut Runtime, c: C) where C: Continuation<()> {
-        if self.runtime.borrow().present {
+        if *self.runtime.present.borrow() {
             c.call(runtime, ());
         }
         else {
-            self.runtime.borrow_mut().waiting.push(Box::new(c));
+            self.runtime.waiting_immediate.borrow_mut().push(Box::new(c));
         }
     }
 
@@ -353,14 +355,14 @@ impl SignalRuntimeRef {
     fn present<C>(self, runtime: &mut Runtime, c: C)
         where C: Continuation<bool>
     {
-        if self.runtime.borrow().present {
+        if *self.runtime.present.borrow() {
             c.call(runtime, true);
         } else {
-            self.runtime.borrow_mut().testing_present.push(Box::new(c));
+            self.runtime.testing_present.borrow_mut().push(Box::new(c));
             let sig_runtime_ref = self.clone();
             let c = move |r: &mut Runtime, ()| {
-                let mut sig_runtime = sig_runtime_ref.runtime.borrow_mut();
-                while let Some(c) = sig_runtime.testing_present.pop() {
+                let mut testing_present = sig_runtime_ref.runtime.testing_present.borrow_mut();
+                while let Some(c) = testing_present.pop() {
                     r.on_current_instant(Box::new(|r: &mut Runtime, ()| {
                         c.call_box(r, false);
                     }));
@@ -417,8 +419,12 @@ pub struct PureSignal {
 
 impl PureSignal {
     pub fn new() -> PureSignal {
-        let runtime = SignalRuntime { present: false, waiting: vec!(), testing_present: vec!() };
-        PureSignal {signal: SignalRuntimeRef { runtime: Rc::new(RefCell::new(runtime)) }}
+        let runtime = SignalRuntime {
+            present: RefCell::new(false),
+            waiting_immediate: RefCell::new(vec!()),
+            testing_present: RefCell::new(vec!())
+        };
+        PureSignal {signal: SignalRuntimeRef { runtime: Rc::new(runtime) }}
     }
 
     pub fn emit(self) -> Emit {
