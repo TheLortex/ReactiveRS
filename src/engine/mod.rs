@@ -83,7 +83,7 @@ pub fn execute_process<P>(process: P) -> P::Value where P:Process {
 #[cfg(test)]
 mod tests {
     use engine::{Runtime, Continuation};
-    use engine::process::{Process, LoopStatus, ProcessMut, Signal, PureSignal};
+    use engine::process::{Process, value, LoopStatus, ProcessMut, Signal, SEmit, PureSignal};
     use engine::process;
     use engine;
 
@@ -247,7 +247,7 @@ mod tests {
             println!("s sent");
             LoopStatus::Continue
         };
-        let p1 = s.emit().pause().pause().pause()
+        let p1 = s.emit(Value::new(())).pause().pause().pause()
             .map(c1).loop_while();
         let c21 = |_| {
             println!("present");
@@ -270,6 +270,24 @@ mod tests {
 
         let p = p1.join(p2.join(p3));
 
+        engine::execute_process(p);
+    }
+
+    use engine::process::{MCSignal, SAwait, Value};
+    #[test]
+    #[ignore]
+    fn test_mc_signal() {
+        let s = MCSignal::new(0, |v1, v2| {
+            println!("{} + {} = {}", v1, v2, v1 + v2);
+            v1 + v2
+        });
+        let p1 = s.clone().emit(value(1)).pause().loop_inf();
+        let print_v = |v| {
+            println!("{}", v);
+            v
+        };
+        let p2 = s.clone().emit(s.clone().await().map(print_v)).loop_inf();
+        let p = p1.join(p2);
         engine::execute_process(p);
     }
 }
