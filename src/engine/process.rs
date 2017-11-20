@@ -37,6 +37,13 @@ pub trait Process: 'static {
         self.map(function).flatten()
     }
 
+    /// Creates a new process that executes the two processes sequentially, and returns the result
+    /// of the second process.
+    fn then<P>(self, process: P) -> Then<Self, P>
+        where Self: Sized, P: Process + Sized {
+        Then {process1: self, process2: process}
+    }
+
     /// Creates a new process that executes the two processes in parallel, and returns the couple of
     /// their return values.
     fn join<P>(self, process: P) -> Join<Self, P> where Self: Sized, P: Sized {
@@ -203,6 +210,54 @@ impl<P> ProcessMut for Flatten<P>
 }
 
 type AndThen<P, F> = Flatten<Map<P, F>>;
+
+/// A process that executes two processes sequentially, and return the value of the last process.
+
+pub struct Then<P, Q> {
+    process1: P,
+    process2: Q,
+}
+
+impl <P, Q> Process for Then<P, Q>
+    where P: Process, Q:Process
+{
+    type Value = Q::Value;
+
+    fn call<C>(self, runtime: &mut Runtime, next: C)
+        where C: Continuation<Self::Value>, C: Sized {
+
+        let p2 = self.process2;
+
+        let c = move |runtime: &mut Runtime, v1: P::Value| {
+            p2.call(runtime, next);
+        };
+
+        self.process1.call(runtime, c);
+    }
+}
+
+
+impl<P, Q> ProcessMut for Then<P, Q>
+    where P: ProcessMut, Q:ProcessMut
+{
+    fn call_mut<C>(self, runtime: &mut Runtime, next: C)
+        where Self: Sized, C: Continuation<(Self, Self::Value)>
+    {
+        let p2 = self.process2;
+
+        let c = move |runtime: &mut Runtime, v: (P, P::Value)| {
+            let (p1, v1) = v;
+
+            let c2 = next.map(move |v: (Q, Q::Value)| {
+                let (p2, v2) = v;
+                (p1.then(p2), v2)
+            });
+            p2.call_mut(runtime, c2);
+        };
+
+        self.process1.call_mut(runtime, c);
+    }
+}
 
 
 /// A process that executes two processes in parallel, and returns both values.
