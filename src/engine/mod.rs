@@ -186,10 +186,9 @@ mod tests {
             x -= 1;
             if x == 0 {
                 LoopStatus::Exit(42)
+            } else {
+                LoopStatus::Continue
             }
-                else {
-                    LoopStatus::Continue
-                }
         };
         let p = process::Value::new(()).map(c);
         assert_eq!(42, engine::execute_process(p.pause().loop_while()));
