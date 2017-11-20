@@ -158,6 +158,29 @@ mod tests {
     }
 
     #[test]
+    fn test_then() {
+        let container = Rc::new(Cell::new(Some(0)));
+        let container2 = container.clone();
+        let container3 = container.clone();
+
+        let plus_3 = move |_| {
+            let v = container.take().unwrap();
+            container.set(Some(v+3))
+        };
+
+        let times_2 = move |_| {
+            let v = container2.take().unwrap();
+            container2.set(Some(v*2))
+        };
+
+        let p_plus_3 = process::Value::new(()).map(plus_3);
+        let p_times_2 = process::Value::new(()).map(times_2);
+
+        engine::execute_process(p_plus_3.then(p_times_2));
+        assert_eq!(6, container3.take().unwrap());
+    }
+
+    #[test]
     fn test_join() {
         let reward = Rc::new(Cell::new(Some(42)));
         let reward2 = reward.clone();
