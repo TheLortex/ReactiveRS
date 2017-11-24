@@ -250,9 +250,7 @@ mod tests {
 
         let pbis = p.loop_while();
         let qloop = q.loop_while();
-        let qbis = process::Value::new(()).pause().and_then(|_| {
-            qloop
-        });
+        let qbis = process::Value::new(()).pause().then(qloop);
 
         let m = n / 2;
         assert_eq!((m * (m + 1), m * m), engine::execute_process(pbis.join(qbis)));
