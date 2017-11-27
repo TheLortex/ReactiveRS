@@ -76,7 +76,12 @@ pub fn execute_process<P>(process: P) -> P::Value where P:Process {
         result2.set(Some(value));
     });
     r.execute();
-    result.take().unwrap()
+    let r = result.take();
+    if let Some(v) = r {
+        v
+    } else {
+        panic!("Deadlock: all processes are blocked waiting some signal.");
+    }
 }
 
 
@@ -181,6 +186,15 @@ mod tests {
     }
 
     #[test]
+    fn test_then_else() {
+        let p = value(false).then_else(value(42), value(44));
+        assert_eq!(engine::execute_process(p), 44);
+
+        let q = value(true).then_else(value(44), value(42));
+        assert_eq!(engine::execute_process(q), 44);
+    }
+
+    #[test]
     fn test_join() {
         let reward = Rc::new(Cell::new(Some(42)));
         let reward2 = reward.clone();
@@ -263,8 +277,6 @@ mod tests {
     #[ignore]
     fn test_pure_signal() {
         let s = PureSignal::new();
-        let s2 = s.clone();
-        let s3 = s.clone();
         let c1: fn(()) -> LoopStatus<()> = |_| {
             println!("s sent");
             LoopStatus::Continue
@@ -282,20 +294,20 @@ mod tests {
         };
         let p22 = process::Value::new(()).map(c22);
         let c2: fn(()) -> LoopStatus<()> = |_| { LoopStatus::Continue };
-        let p2 = s2.present(p21, p22)
+        let p2 = s.present(p21, p22)
             .map(c2).loop_while();
         let c3: fn(()) -> LoopStatus<()> = |_| {
             println!("s received");
             LoopStatus::Continue
         };
-        let p3 = s3.await_immediate().map(c3).pause().loop_while();
+        let p3 = s.await_immediate().map(c3).pause().loop_while();
 
         let p = p1.join(p2.join(p3));
 
         engine::execute_process(p);
     }
 
-    use engine::process::{MCSignal, SAwait, Value};
+    use engine::process::{MCSignal, SAwaitIn, Value};
     #[test]
     #[ignore]
     fn test_mc_signal() {
@@ -303,13 +315,65 @@ mod tests {
             println!("{} + {} = {}", v1, v2, v1 + v2);
             v1 + v2
         });
-        let p1 = s.clone().emit(value(1)).pause().loop_inf();
+        let p1 = s.emit(value(1)).pause().loop_inf();
         let print_v = |v| {
             println!("{}", v);
             v
         };
-        let p2 = s.clone().emit(s.clone().await().map(print_v)).loop_inf();
+        let p2 = s.emit(s.await_in().map(print_v)).loop_inf();
         let p = p1.join(p2);
         engine::execute_process(p);
+    }
+
+    use engine::process::{MPSCSignal, SAwaitInConsume};
+    #[test]
+    fn test_mpsc_signal() {
+        pub struct TestStruct {
+            content: i32,
+        }
+
+        let (s1, r1) = MPSCSignal::new(|v1: TestStruct, v2| {
+           Some(v1)
+        });
+
+        let (s2, r2) = MPSCSignal::new(|v1: TestStruct, v2| {
+            Some(v1)
+        });
+
+        let pre_loop1 = s1.emit(value(TestStruct { content: 0 }));
+        let loop1 = move | v: Option<TestStruct> | {
+            let mut v = v.unwrap();
+//            println!("Value seen: {}", v.content);
+            let x = v.content;
+            v.content += 1;
+            let condition = value(x >= 10);
+            let p_true = value(LoopStatus::Exit(x));
+            let p_false = s1.emit(value(v)).then(value(LoopStatus::Continue));
+
+            condition.then_else(p_true, p_false)
+        };
+
+        let loop2 = move | v: Option<TestStruct> | {
+            let mut v = v.unwrap();
+            println!("Value seen: {}", v.content);
+            let x = v.content;
+            v.content += 1;
+            let condition = value(x >= 10);
+            let p = {
+                if x >= 10 {
+                    LoopStatus::Exit(x)
+                } else {
+                    LoopStatus::Continue
+                }
+            };
+
+            s2.emit(value(v)).then(value(p))
+        };
+
+        let p1 = pre_loop1.then(r2.await_in().map(loop1).flatten().loop_while());
+        let p2 = r1.await_in().map(loop2).flatten().loop_while();
+
+        let p = p1.join(p2);
+        assert_eq!(engine::execute_process(p), (11, 10));
     }
 }

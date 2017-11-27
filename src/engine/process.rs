@@ -2,6 +2,7 @@ use super::Runtime;
 use super::continuation::Continuation;
 use std::cell::Cell;
 use std::rc::Rc;
+use std::mem::swap;
 
 
 /// A reactive process.
@@ -24,7 +25,7 @@ pub trait Process: 'static {
     }
 
     /// Creates a new process that executes the process returned by `Self`.
-    fn flatten<>(self) -> Flatten<Self>
+    fn flatten(self) -> Flatten<Self>
         where Self: Sized, Self::Value: Process {
         Flatten { process: self }
     }
@@ -48,6 +49,13 @@ pub trait Process: 'static {
     /// their return values.
     fn join<P>(self, process: P) -> Join<Self, P> where Self: Sized, P: Sized {
         Join {process1: self, process2: process}
+    }
+
+    /// Creates a new process that executes process `q1` if the result of `Self` is true, and `q2`
+    /// otherwise.
+    fn then_else<Q1, Q2>(self, q1: Q1, q2: Q2) -> ThenElse<Self, Q1, Q2>
+        where Self: Process<Value=bool> + Sized, Q1: Process, Q2: Process<Value=Q1::Value> {
+        ThenElse { condition: self, q1, q2}
     }
 }
 
@@ -219,12 +227,12 @@ pub struct Then<P, Q> {
 }
 
 impl <P, Q> Process for Then<P, Q>
-    where P: Process, Q:Process
+    where P: Process, Q: Process
 {
     type Value = Q::Value;
 
     fn call<C>(self, runtime: &mut Runtime, next: C)
-        where C: Continuation<Self::Value>, C: Sized {
+        where C: Continuation<Self::Value> + Sized {
 
         let p2 = self.process2;
 
@@ -318,6 +326,50 @@ impl<P, Q> ProcessMut for Join<P, Q> where P: ProcessMut, Q:ProcessMut {
     }
 }
 
+/// A process that executes `q1` or `q2` depending on `condition` result.
+pub struct ThenElse<P, Q1, Q2> {
+    condition: P,
+    q1: Q1,
+    q2: Q2,
+}
+
+impl<P, Q1, Q2> Process for ThenElse<P, Q1, Q2>
+    where P: Process<Value=bool>, Q1: Process, Q2: Process<Value=Q1::Value>
+{
+    type Value = Q1::Value;
+
+    fn call<C>(self, runtime: &mut Runtime, next: C) where C: Continuation<Self::Value> {
+        let q1 = self.q1;
+        let q2 = self.q2;
+        self.condition.call(runtime, move |r: &mut Runtime, v: bool| {
+            if v {
+                q1.call(r, next);
+            } else {
+                q2.call(r, next);
+            }
+        });
+    }
+}
+
+impl<P, Q1, Q2> ProcessMut for ThenElse<P, Q1, Q2>
+    where P: ProcessMut<Value=bool>, Q1: ProcessMut, Q2: ProcessMut<Value=Q1::Value>
+{
+    fn call_mut<C>(self, runtime: &mut Runtime, next: C) where Self: Sized, C: Continuation<(Self, Self::Value)> {
+        let q1 = self.q1;
+        let q2 = self.q2;
+        self.condition.call_mut(runtime, move |r: &mut Runtime, (p, v): (P, bool)| {
+            if v {
+                q1.call_mut(r, move |r: &mut Runtime, (q1, v)| {
+                    next.call(r, (p.then_else(q1, q2), v));
+                });
+            } else {
+                q2.call_mut(r, move |r: &mut Runtime, (q2, v)| {
+                    next.call(r,(p.then_else(q1, q2), v));
+                });
+            }
+        });
+    }
+}
 
 /// A process that executes a ProcessMut once and returns it with the obtained value.
 pub struct Mut<P> {
@@ -370,83 +422,44 @@ impl<P, V> ProcessMut for While<P> where P: ProcessMut, P: Process<Value=LoopSta
 }
 
 
+
+
+
 use std::cell::RefCell;
-/// A shared pointer to a signal runtime.
-pub struct SignalRuntimeRef<V1, V2> where SignalRuntime<V1, V2>: Sized {
-    runtime: Rc<SignalRuntime<V1, V2>>,
+
+pub trait ValueRuntime {
+    type V1;
+    type V2;
+
+    fn emit(&self, runtime: &mut Runtime, v: Self::V1);
+    fn await_in<C>(&self, runtime: &mut Runtime, c:C) where C: Continuation<Self::V2>;
+    fn release_await_in(&self, runtime: &mut Runtime);
 }
 
-impl<V1, V2> Clone for SignalRuntimeRef<V1, V2> {
+pub struct SignalRuntime<VR> {
+    present: RefCell<bool>,
+    waiting_immediate: RefCell<Vec<Box<Continuation<()>>>>,
+    testing_present: RefCell<Vec<Box<Continuation<bool>>>>,
+    waiting: RefCell<Vec<Box<Continuation<()>>>>,
+    value_runtime: VR,
+}
+
+/// A shared pointer to a signal runtime.
+pub struct SignalRuntimeRef<VR> {
+    runtime: Rc<SignalRuntime<VR>>,
+}
+
+impl<VR> Clone for SignalRuntimeRef<VR> {
     fn clone(&self) -> Self {
         SignalRuntimeRef { runtime: self.runtime.clone() }
     }
 }
 
-/// Runtime for pure signals.
-pub struct SignalRuntime<V1, V2> {
-    present: RefCell<bool>,
-    waiting_immediate: RefCell<Vec<Box<Continuation<()>>>>,
-    testing_present: RefCell<Vec<Box<Continuation<bool>>>>,
-    waiting: RefCell<Vec<Box<Continuation<V2>>>>,
-    value: Cell<Option<V2>>,
-    default: V2,
-    gather: Box<Fn(V1, V2) -> V2>,
-}
 
-impl<V1, V2> SignalRuntimeRef<V1, V2> where V1: 'static, V2: 'static + Clone {
-    /// Sets the signal as emitted for the current instant, and updates the value of signal with
-    /// the new emitted value.
-    fn emit(self, runtime: &mut Runtime, value: V1) {
-        let mut present = self.runtime.present.borrow_mut();
-        if !*present {
-            // We first set the signal as emitted.
-            *present = true;
-
-            // Then we release all the continuations contained in waiting_immediate.
-            let mut waiting_immediate = self.runtime.waiting_immediate.borrow_mut();
-            while let Some(c) = waiting_immediate.pop() {
-                runtime.on_current_instant(c);
-            }
-
-            // Then we release all the continuations contained in testing_present, with true as
-            // argument.
-            let mut testing_present = self.runtime.testing_present.borrow_mut();
-            while let Some(c) = testing_present.pop() {
-                runtime.on_current_instant(Box::new(move |r: &mut Runtime, ()| {
-                    c.call_box(r, true);
-                }));
-            }
-
-            // Since the signal was emitted at this cycle, we will have to release all the waiting
-            // continuations at the end_of_instant, and reset the signal presence and value.
-            let sig_runtime_ref = self.clone();
-            let c = move |r: &mut Runtime, ()| {
-                *sig_runtime_ref.runtime.present.borrow_mut() = false;
-
-                let mut waiting = sig_runtime_ref.runtime.waiting.borrow_mut();
-                let value = sig_runtime_ref.runtime.value.take().unwrap();
-                while let Some(cont) = waiting.pop() {
-                    // Here, we have to clone the signal value.
-                    // TODO: Solve this for SC signals.
-                    let v = value.clone();
-                    r.on_current_instant(Box::new(move |r: &mut Runtime, ()| {
-                        cont.call_box(r, v);
-                    }));
-                }
-
-                // Finally, we reset the signal value.
-                sig_runtime_ref.runtime.value.set(Some(sig_runtime_ref.runtime.default.clone()));
-            };
-            runtime.on_end_of_instant(Box::new(c));
-        }
-
-        // We update the signal value with the new emitted one.
-        let v = self.runtime.value.take().unwrap();
-        self.runtime.value.set(Some((self.runtime.gather)(value, v)));
-    }
+impl<VR> SignalRuntimeRef<VR> where VR: ValueRuntime + 'static {
 
     /// Calls `c` at the first cycle where the signal is present.
-    fn on_signal<C>(self, runtime: &mut Runtime, c: C) where C: Continuation<()> {
+    fn on_signal<C>(&self, runtime: &mut Runtime, c: C) where C: Continuation<()> {
         if *self.runtime.present.borrow() {
             // If the signal is present, we call c.
             c.call(runtime, ());
@@ -457,7 +470,7 @@ impl<V1, V2> SignalRuntimeRef<V1, V2> where V1: 'static, V2: 'static + Clone {
     }
 
     /// Calls `c` with the boolean which indicates if the signal is present.
-    fn present<C>(self, runtime: &mut Runtime, c: C)
+    fn present<C>(&self, runtime: &mut Runtime, c: C)
         where C: Continuation<bool>
     {
         if *self.runtime.present.borrow() {
@@ -490,32 +503,81 @@ impl<V1, V2> SignalRuntimeRef<V1, V2> where V1: 'static, V2: 'static + Clone {
         }
     }
 
-    /// Calls `c` at the next cycle after the signal is present, with the value of the signal.
-    fn wait<C>(self, runtime: &mut Runtime, c:C)
-        where C: Continuation<V2>
+    /// Calls `c` at the next cycle after the signal is present.
+    fn await<C>(&self, runtime: &mut Runtime, c:C) where C: Continuation<()>
     {
-        self.runtime.waiting.borrow_mut().push(Box::new(c));
+        self.on_signal(runtime, |r: &mut Runtime, ()| {
+            r.on_next_instant(Box::new(c));
+        })
+    }
+
+    /// Sets the signal as emitted for the current instant, and updates the value of signal with
+    /// the new emitted value.
+    fn emit(&self, runtime: &mut Runtime, value: VR::V1) {
+        let mut present = self.runtime.present.borrow_mut();
+        if !*present {
+            // We first set the signal as emitted.
+            *present = true;
+
+            // Then we release all the continuations contained in waiting_immediate.
+            let mut waiting_immediate = self.runtime.waiting_immediate.borrow_mut();
+            while let Some(c) = waiting_immediate.pop() {
+                runtime.on_current_instant(c);
+            }
+
+            // Then we release all the continuations contained in testing_present, with true as
+            // argument.
+            let mut testing_present = self.runtime.testing_present.borrow_mut();
+            while let Some(c) = testing_present.pop() {
+                runtime.on_current_instant(Box::new(move |r: &mut Runtime, ()| {
+                    c.call_box(r, true);
+                }));
+            }
+
+            // Since the signal was emitted at this cycle, we will have to release all the waiting
+            // continuations at the end_of_instant, and reset the signal presence.
+            let sig_runtime_ref = self.clone();
+            let c = move |r: &mut Runtime, ()| {
+                *sig_runtime_ref.runtime.present.borrow_mut() = false;
+
+                let mut waiting = sig_runtime_ref.runtime.waiting.borrow_mut();
+                while let Some(cont) = waiting.pop() {
+                    r.on_current_instant(cont);
+                }
+
+                sig_runtime_ref.runtime.value_runtime.release_await_in(r);
+            };
+            runtime.on_end_of_instant(Box::new(c));
+        }
+
+        // We update the signal value with the new emitted one.
+        self.runtime.value_runtime.emit(runtime, value);
+    }
+
+    /// Calls `c` at the next cycle after the signal is present, with the value of the signal.
+    fn wait<C>(&self, runtime: &mut Runtime, c:C)
+        where C: Continuation<VR::V2>
+    {
+        self.runtime.value_runtime.await_in(runtime, c);
     }
 }
 
-
 /// A reactive signal.
-pub trait Signal: 'static {
-    type V1;
-    type V2: Clone;
+pub trait Signal where {
+    type VR: ValueRuntime;
 
     /// Returns a reference to the signal's runtime.
-    fn runtime(self) -> SignalRuntimeRef<Self::V1, Self::V2>;
+    fn runtime(&self) -> SignalRuntimeRef<Self::VR>;
 
     /// Returns a process that waits for the next emission of the signal, current instant
     /// included.
-    fn await_immediate(self) -> AwaitImmediate<Self> where Self: Sized {
+    fn await_immediate(&self) -> AwaitImmediate<Self> where Self: Sized {
         AwaitImmediate { signal: self.runtime() }
     }
 
     /// Returns a process that calls `p` if the signal is present, and calls `q` at the next instant
     /// if the signal is not present.
-    fn present<P, Q, V>(self, p: P, q: Q) -> Present<P, Q, Self>
+    fn present<P, Q, V>(&self, p: P, q: Q) -> Present<P, Q, Self>
         where P: Process<Value=V>, Q: Process<Value=V>, Self: Sized
     {
         Present { signal: self.runtime(), process1: p, process2: q }
@@ -529,25 +591,34 @@ pub trait Signal: 'static {
 pub trait SEmit: Signal {
 
     /// Returns a process that executes `p`, and emits its returned value.
-    fn emit<P>(self, p: P) -> Emit<Self, P> where P: Process<Value=Self::V1>, Self: Sized {
+    fn emit<P>(&self, p: P) -> Emit<Self, P> where P: Process<Value=<Self::VR as ValueRuntime>::V1>, Self: Sized {
         Emit { signal: self.runtime(), process: p }
     }
 }
 
 
 /// A reactive signal whose value can be read.
-pub trait SAwait: Signal {
+pub trait SAwaitIn: Signal {
 
     /// Returns a process that waits for the signal, and at next instant returns its value.
-    fn await(self) -> Await<Self> where Self: Sized {
-        Await { signal: self.runtime() }
+    fn await_in(&self) -> AwaitIn<Self> where Self: Sized {
+        AwaitIn { signal: self.runtime() }
+    }
+}
+
+/// A reactive signal whose value can be read only at one location in the code.
+pub trait SAwaitInConsume: Signal {
+
+    /// Returns a process that waits for the signal, and at next instant returns its value.
+    fn await_in(self) -> AwaitIn<Self> where Self: Sized {
+        AwaitIn { signal: self.runtime() }
     }
 }
 
 
 #[derive(Clone)]
 pub struct AwaitImmediate<S> where S: Signal {
-    signal: SignalRuntimeRef<S::V1, S::V2>,
+    signal: SignalRuntimeRef<S::VR>,
 }
 
 impl<S> Process for AwaitImmediate<S> where S: Signal + 'static {
@@ -570,16 +641,16 @@ impl<S> ProcessMut for AwaitImmediate<S> where S: Signal + 'static {
 }
 
 pub struct Emit<S, P> where S: Signal {
-    signal: SignalRuntimeRef<S::V1, S::V2>,
+    signal: SignalRuntimeRef<S::VR>,
     process: P,
 }
 
-impl<S, P> Process for Emit<S, P> where S: Signal, P: Process<Value=S::V1> {
+impl<S, P> Process for Emit<S, P> where S: Signal + 'static, P: Process<Value=<S::VR as ValueRuntime>::V1> {
     type Value = ();
 
     fn call<C>(self, runtime: &mut Runtime, next: C) where C: Continuation<Self::Value> {
         let signal = self.signal;
-        self.process.call(runtime, |r: &mut Runtime, v: S::V1| {
+        self.process.call(runtime, move |r: &mut Runtime, v: <S::VR as ValueRuntime>::V1| {
             signal.emit(r, v);
             next.call(r, ());
         });
@@ -587,14 +658,14 @@ impl<S, P> Process for Emit<S, P> where S: Signal, P: Process<Value=S::V1> {
 }
 
 impl<S, P> ProcessMut for Emit<S, P>
-    where S: Signal, P: Process<Value=S::V1>, P: ProcessMut
+    where S: Signal + 'static, P: Process<Value=<S::VR as ValueRuntime>::V1>, P: ProcessMut
 {
     fn call_mut<C>(self, runtime: &mut Runtime, next: C)
         where Self: Sized, C: Continuation<(Self, Self::Value)>
     {
         let signal_copy = self.signal.clone();
         let signal = self.signal;
-        self.process.call_mut(runtime, |r: &mut Runtime, (p, v): (P, S::V1)| {
+        self.process.call_mut(runtime, move|r: &mut Runtime, (p, v): (P, <S::VR as ValueRuntime>::V1)| {
             signal.emit(r, v);
             next.call(r, (Emit { signal: signal_copy, process: p}, ()));
         });
@@ -602,13 +673,13 @@ impl<S, P> ProcessMut for Emit<S, P>
 }
 
 pub struct Present<P, Q, S> where S: Signal {
-    signal: SignalRuntimeRef<S::V1, S::V2>,
+    signal: SignalRuntimeRef<S::VR>,
     process1: P,
     process2: Q,
 }
 
 impl<P, Q, S, V> Process for Present<P, Q, S>
-    where P: Process<Value=V>, Q: Process<Value=V>, S: Signal + 'static, S::V2: Clone
+    where P: Process<Value=V>, Q: Process<Value=V>, S: Signal + 'static
 {
     type Value = V;
 
@@ -618,9 +689,9 @@ impl<P, Q, S, V> Process for Present<P, Q, S>
             if present {
                 self.process1.call(r, next);
             }
-            else {
-                self.process2.call(r, next);
-            }
+                else {
+                    self.process2.call(r, next);
+                }
         });
     }
 }
@@ -640,45 +711,64 @@ impl<P, Q, S, V> ProcessMut for Present<P, Q, S>
                     (Present { signal: signal2, process1: p, process2: q }, v)
                 }).call(r, next);
             }
-            else {
-                let p = self.process1;
-                self.process2.get_mut().map(move |(q, v)| {
-                    (Present { signal: signal2, process1: p, process2: q }, v)
-                }).call(r, next);
-            }
+                else {
+                    let p = self.process1;
+                    self.process2.get_mut().map(move |(q, v)| {
+                        (Present { signal: signal2, process1: p, process2: q }, v)
+                    }).call(r, next);
+                }
         });
     }
 }
 
 
 #[derive(Clone)]
-pub struct Await<S> where S: Signal {
-    signal: SignalRuntimeRef<S::V1, S::V2>,
+pub struct AwaitIn<S> where S: Signal {
+    signal: SignalRuntimeRef<S::VR>,
 }
 
-impl<S> Process for Await<S> where S: Signal + 'static {
-    type Value = S::V2;
+impl<S> Process for AwaitIn<S> where S: Signal + 'static {
+    type Value = <S::VR as ValueRuntime>::V2;
 
     fn call<C>(self, runtime: &mut Runtime, next: C) where C: Continuation<Self::Value> {
         self.signal.wait(runtime, next);
     }
 }
 
-impl<S> ProcessMut for Await<S> where S: Signal + 'static {
+impl<S> ProcessMut for AwaitIn<S> where S: Signal + 'static {
     fn call_mut<C>(self, runtime: &mut Runtime, next: C)
         where Self: Sized, C: Continuation<(Self, Self::Value)>
     {
         let signal = self.signal.clone();
         self.signal.wait(runtime, move |r: &mut Runtime, v| {
-            next.call(r, (Await { signal }, v))
+            next.call(r, (AwaitIn { signal }, v))
         });
     }
 }
 
 
+pub struct PureSignalValueRuntime {}
+
+impl ValueRuntime for PureSignalValueRuntime {
+    type V1 = ();
+    type V2 = ();
+
+    fn emit(&self, runtime: &mut Runtime, v: Self::V1) {
+        return;
+    }
+
+    fn await_in<C>(&self, runtime: &mut Runtime, c:C) where C: Continuation<Self::V2> {
+        return;
+    }
+
+    fn release_await_in(&self, runtime: &mut Runtime) {
+        return;
+    }
+}
+
 #[derive(Clone)]
 pub struct PureSignal {
-    signal: SignalRuntimeRef<(), ()>,
+    signal: SignalRuntimeRef<PureSignalValueRuntime>,
 }
 
 impl PureSignal {
@@ -688,55 +778,186 @@ impl PureSignal {
             waiting_immediate: RefCell::new(vec!()),
             testing_present: RefCell::new(vec!()),
             waiting: RefCell::new(vec!()),
-            value: Cell::new(Some(())),
-            default: (),
-            gather: Box::new(|(), ()| { () }),
+            value_runtime: PureSignalValueRuntime {},
         };
         PureSignal {signal: SignalRuntimeRef { runtime: Rc::new(runtime) }}
     }
 }
 
 impl Signal for PureSignal {
-    type V1 = ();
-    type V2 = ();
+    type VR = PureSignalValueRuntime;
 
-    fn runtime(self) -> SignalRuntimeRef<Self::V1, Self::V2> {
+    fn runtime(&self) -> SignalRuntimeRef<Self::VR> {
         self.signal.clone()
     }
 }
 
 impl SEmit for PureSignal {}
 
+
+/// Value Runtime for MC Signals.
+pub struct MCSignalValueRuntime<V1, V2> {
+    waiting_in: RefCell<Vec<Box<Continuation<V2>>>>,
+    value: Cell<Option<V2>>,
+    default: V2,
+    gather: Box<Fn(V1, V2) -> V2>,
+}
+
+impl<V1, V2> ValueRuntime for MCSignalValueRuntime<V1, V2> where V2: Clone + 'static {
+    type V1 = V1;
+    type V2 = V2;
+
+    fn emit(&self, runtime: &mut Runtime, v: Self::V1) {
+        let v2 = self.value.take().unwrap();
+        self.value.set(Some((self.gather)(v, v2)));
+    }
+
+    fn await_in<C>(&self, runtime: &mut Runtime, c:C) where C: Continuation<Self::V2> {
+        self.waiting_in.borrow_mut().push(Box::new(c));
+    }
+
+    fn release_await_in(&self, runtime: &mut Runtime) {
+        let mut waiting_in = self.waiting_in.borrow_mut();
+        let value = self.value.take().unwrap();
+        while let Some(cont) = waiting_in.pop() {
+            // Here, we have to clone the signal value.
+            // TODO: Solve this for SC signals.
+            let v = value.clone();
+            runtime.on_current_instant(Box::new(move |r: &mut Runtime, ()| {
+                cont.call_box(r, v);
+            }));
+        }
+
+        // Finally, we reset the signal value.
+        self.value.set(Some(self.default.clone()));
+    }
+}
+
+
 #[derive(Clone)]
 pub struct MCSignal<V1, V2> {
-    signal: SignalRuntimeRef<V1, V2>,
+    signal: SignalRuntimeRef<MCSignalValueRuntime<V1, V2>>,
 }
 
 impl<V1, V2> MCSignal<V1, V2> where V2: Clone {
     pub fn new<F>(default: V2, gather: F) -> Self
         where F: Fn(V1, V2) -> V2 + 'static
     {
+        let value_runtime = MCSignalValueRuntime {
+            waiting_in: RefCell::new(vec!()),
+            value: Cell::new(Some(default.clone())),
+            default,
+            gather: Box::new(gather),
+        };
         let runtime = SignalRuntime {
             present: RefCell::new(false),
             waiting_immediate: RefCell::new(vec!()),
             testing_present: RefCell::new(vec!()),
             waiting: RefCell::new(vec!()),
-            value: Cell::new(Some(default.clone())),
-            default,
-            gather: Box::new(gather),
+            value_runtime
         };
         MCSignal {signal: SignalRuntimeRef { runtime: Rc::new(runtime) }}
     }
 }
 
 impl<V1, V2> Signal for MCSignal<V1, V2> where V1: 'static, V2: 'static + Clone {
-    type V1 = V1;
-    type V2 = V2;
+    type VR = MCSignalValueRuntime<V1, V2>;
 
-    fn runtime(self) -> SignalRuntimeRef<Self::V1, Self::V2> {
+    fn runtime(&self) -> SignalRuntimeRef<Self::VR> {
         self.signal.clone()
     }
 }
 
 impl<V1, V2> SEmit for MCSignal<V1, V2> where V1: 'static, V2: 'static + Clone {}
-impl<V1, V2> SAwait for MCSignal<V1, V2> where V1: 'static, V2: 'static + Clone {}
+impl<V1, V2> SAwaitIn for MCSignal<V1, V2> where V1: 'static, V2: 'static + Clone {}
+
+
+/// Value Runtime for MPSC Signals.
+pub struct MPSCSignalValueRuntime<V1, V2> {
+    waiting_in: RefCell<Option<Box<Continuation<V2>>>>,
+    value: Cell<Option<V2>>,
+    gather: Box<Fn(V1, V2) -> V2>,
+}
+
+impl<V1, V2> ValueRuntime for MPSCSignalValueRuntime<V1, V2> where V2: Default + 'static {
+    type V1 = V1;
+    type V2 = V2;
+
+    fn emit(&self, runtime: &mut Runtime, v: Self::V1) {
+        let v2 = self.value.take().unwrap();
+        self.value.set(Some((self.gather)(v, v2)));
+    }
+
+    fn await_in<C>(&self, runtime: &mut Runtime, c:C) where C: Continuation<Self::V2> {
+        *self.waiting_in.borrow_mut() = Some(Box::new(c));
+    }
+
+    fn release_await_in(&self, runtime: &mut Runtime) {
+        let mut waiting_in = self.waiting_in.borrow_mut();
+        let value = self.value.take().unwrap();
+        let mut empty = None;
+        swap(&mut empty, &mut *waiting_in);
+
+        if let Some(c) = empty {
+            runtime.on_current_instant(Box::new(move |r: &mut Runtime, ()| {
+                c.call_box(r, value);
+            }));
+        }
+
+        // Finally, we reset the signal value.
+        self.value.set(Some(V2::default()));
+    }
+}
+
+
+#[derive(Clone)]
+pub struct MPSCSignal<V1, V2> {
+    signal: SignalRuntimeRef<MPSCSignalValueRuntime<V1, V2>>,
+}
+
+pub struct MPSCSignalReceiver<V1, V2> {
+    signal: SignalRuntimeRef<MPSCSignalValueRuntime<V1, V2>>,
+}
+
+impl<V1, V2> MPSCSignal<V1, V2> where V2: Default {
+    pub fn new<F>(gather: F) -> (Self, MPSCSignalReceiver<V1, V2>)
+        where F: Fn(V1, V2) -> V2 + 'static
+    {
+        let value_runtime = MPSCSignalValueRuntime {
+            waiting_in: RefCell::new(None),
+            value: Cell::new(Some(V2::default())),
+            gather: Box::new(gather),
+        };
+        let runtime = SignalRuntime {
+            present: RefCell::new(false),
+            waiting_immediate: RefCell::new(vec!()),
+            testing_present: RefCell::new(vec!()),
+            waiting: RefCell::new(vec!()),
+            value_runtime
+        };
+        let runtime_ref = SignalRuntimeRef { runtime: Rc::new(runtime) };
+        (MPSCSignal {signal: runtime_ref.clone() },
+        MPSCSignalReceiver { signal : runtime_ref })
+    }
+}
+
+impl<V1, V2> Signal for MPSCSignal<V1, V2> where V1: 'static, V2: 'static + Default {
+    type VR = MPSCSignalValueRuntime<V1, V2>;
+
+    fn runtime(&self) -> SignalRuntimeRef<Self::VR> {
+        self.signal.clone()
+    }
+}
+
+impl<V1, V2> Signal for MPSCSignalReceiver<V1, V2> where V1: 'static, V2: 'static + Default {
+    type VR = MPSCSignalValueRuntime<V1, V2>;
+
+    fn runtime(&self) -> SignalRuntimeRef<Self::VR> {
+        self.signal.clone()
+    }
+}
+
+impl<V1, V2> SEmit for MPSCSignal<V1, V2> where V1: 'static, V2: 'static + Default {}
+
+impl<V1, V2> SEmit for MPSCSignalReceiver<V1, V2> where V1: 'static, V2: 'static + Default {}
+impl<V1, V2> SAwaitInConsume for MPSCSignalReceiver<V1, V2> where V1: 'static, V2: 'static + Default {}
