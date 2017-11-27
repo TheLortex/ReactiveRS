@@ -374,4 +374,50 @@ mod tests {
         let p = p1.join(p2);
         assert_eq!(engine::execute_process(p), (11, 10));
     }
+
+    use engine::process::{SPMCSignal, SPMCSignalSender, SAwaitOneImmediate, SEmitConsume};
+    #[test]
+    fn test_spmc_signal() {
+
+        let (s, sender) = SPMCSignal::new();
+        let mut count = 0;
+        let loop1 = move | () | {
+            count += 1;
+            if count >= 10 {
+                LoopStatus::Exit((10))
+            } else {
+                LoopStatus::Continue
+            }
+        };
+
+        let mut signal_value = 0;
+        let increment = move | () | {
+            signal_value += 2;
+            signal_value
+        };
+
+        let p1 = sender.emit(value(()).map(increment)).map(loop1).pause().loop_while();
+
+        let loop2 = move | v: i32 | {
+            println!("Value seen: {}", v);
+            if v >= 19 {
+                LoopStatus::Exit(v)
+            } else {
+                LoopStatus::Continue
+            }
+        };
+        let loop3 = move | v: i32 | {
+            println!("Value seen: {}", v);
+            if v >= 19 {
+                LoopStatus::Exit(v)
+            } else {
+                LoopStatus::Continue
+            }
+        };
+
+        let p2 = s.await_in().map(loop2).loop_while();
+        let p3 = s.await_one_immediate().map(loop3).pause().loop_while();
+        let p = p1.join(p2.join(p3));
+        assert_eq!(engine::execute_process(p), (10, (20, 20)));
+    }
 }
