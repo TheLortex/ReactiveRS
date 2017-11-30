@@ -1,31 +1,31 @@
 use super::Runtime;
 use super::continuation::Continuation;
 use std::cell::Cell;
-use std::rc::Rc;
 
+use std::sync::{Arc, Mutex};
 
 /// A reactive process.
-pub trait Process: 'static {
+pub trait Process: 'static + Send{
     /// The value created by the process.
     type Value;
 
     /// Executes the reactive process in the runtime, calls `next` with the resulting value.
     fn call<C>(self, runtime: &mut Runtime, next: C) where C: Continuation<Self::Value>;
 
-    fn pause(self) -> Pause<Self> where Self: Sized {
+    fn pause(self) -> Pause<Self> where Self: Sized, Self::Value: Send {
         Pause {process: self}
     }
 
     /// Creates a new process that applies a function to the output value of `Self`.
     fn map<F, V2>(self, map: F) -> Map<Self, F>
-        where Self: Sized, F: FnOnce(Self::Value) -> V2 + 'static
+        where Self: Sized, F: FnOnce(Self::Value) -> V2 + 'static + Send
     {
         Map { process: self, map }
     }
 
     /// Creates a new process that executes the process returned by `Self`.
     fn flatten<>(self) -> Flatten<Self>
-        where Self: Sized, Self::Value: Process {
+        where Self: Sized, Self::Value: Process + Send {
         Flatten { process: self }
     }
 
@@ -33,7 +33,7 @@ pub trait Process: 'static {
     /// Creates a new process that executes the first process, applies the given function to the
     /// result, and executes the returned process.
     fn and_then<F, P>(self, function: F) -> AndThen<Self, F>
-        where F: FnOnce(Self::Value) -> P + 'static, Self: Sized, P: Process {
+        where F: FnOnce(Self::Value) -> P + 'static + Send, Self: Sized, P: Process {
         self.map(function).flatten()
     }
 
@@ -86,7 +86,7 @@ pub struct Value<V> {
     value: V,
 }
 
-impl<V> Value<V> where V: 'static {
+impl<V> Value<V> where V: 'static + Send {
     pub fn new(v: V) -> Self {
         Value {value: v}
     }
@@ -96,7 +96,7 @@ pub fn value<V>(v: V) -> Value<V> where V: 'static {
     Value { value: v }
 }
 
-impl<V> Process for Value<V> where V: 'static {
+impl<V> Process for Value<V> where V: 'static + Send {
     type Value = V;
 
     fn call<C>(self, runtime: &mut Runtime, next: C) where C: Continuation<Self::Value> {
@@ -104,7 +104,7 @@ impl<V> Process for Value<V> where V: 'static {
     }
 }
 
-impl<V> ProcessMut for Value<V> where V: Copy + 'static {
+impl<V> ProcessMut for Value<V> where V: Copy + 'static + Send {
     fn call_mut<C>(self, runtime: &mut Runtime, next: C)
         where Self: Sized, C: Continuation<(Self, Self::Value)> {
         let v = self.value;
@@ -117,7 +117,7 @@ pub struct Pause<P> {
     process: P,
 }
 
-impl<P> Process for Pause<P> where P: Process {
+impl<P> Process for Pause<P> where P: Process, P::Value: Send {
     type Value = P::Value;
 
     fn call<C>(self, runtime: &mut Runtime, next: C) where C: Continuation<Self::Value> {
@@ -128,7 +128,7 @@ impl<P> Process for Pause<P> where P: Process {
     }
 }
 
-impl<P> ProcessMut for Pause<P> where P: ProcessMut {
+impl<P> ProcessMut for Pause<P> where P: ProcessMut, P::Value: Send {
     fn call_mut<C>(self, runtime: &mut Runtime, next: C)
         where Self: Sized, C: Continuation<(Self, Self::Value)> {
 //        self.process.call_mut(runtime,
@@ -149,7 +149,7 @@ pub struct Map<P, F> {
 }
 
 impl<P, F, V2> Process for Map<P, F>
-    where P: Process, F: FnOnce(P::Value) -> V2 + 'static
+    where P: Process, F: FnOnce(P::Value) -> V2 + 'static + Send
 {
     type Value = V2;
 
@@ -163,7 +163,7 @@ impl<P, F, V2> Process for Map<P, F>
 }
 
 impl<P, F, V2> ProcessMut for Map<P, F>
-    where P: ProcessMut, F: FnMut(P::Value) -> V2 + 'static
+    where P: ProcessMut, F: FnMut(P::Value) -> V2 + 'static + Send
 {
     fn call_mut<C>(self, runtime: &mut Runtime, next: C)
         where Self: Sized, C: Continuation<(Self, Self::Value)>
@@ -266,48 +266,78 @@ pub struct Join<P, Q> {
     process2: Q,
 }
 
-pub struct JoinPoint<V1, V2, C> where C: Continuation<(V1, V2)> {
-    v1: Cell<Option<V1>>,
-    v2: Cell<Option<V2>>,
-    continuation: Cell<Option<C>>,
+pub struct JoinPoint<V1, V2, C> where C: Continuation<(V1, V2)>, V1: Send, V2: Send {
+    v1: Mutex<Option<V1>>,
+    v2: Mutex<Option<V2>>,
+    continuation: Mutex<Option<C>>,
 }
 
 impl<P, Q> Process for Join<P, Q>
-    where P: Process, Q: Process
+    where P: Process, Q: Process, P::Value: Send, Q::Value: Send
 {
     type Value = (P::Value, Q::Value);
 
     fn call<C>(self, runtime: &mut Runtime, next: C) where C: Continuation<Self::Value>, C: Sized {
-        let join_point = Rc::new(JoinPoint {
-            v1: Cell::new(None), v2: Cell::new(None), continuation: Cell::new(Some(next)),
+        let join_point = Arc::new(JoinPoint {
+            v1: Mutex::new(None), v2: Mutex::new(None), continuation: Mutex::new(Some(next)),
         });
         let join_point2 = join_point.clone();
         let c1 = move |runtime: &mut Runtime, v1: P::Value| {
-            let v2 = join_point.v2.take();
-
-            if let Some(v2) = v2 {
-                join_point.continuation.take().unwrap().call(runtime, (v1, v2));
+            let mut ok;
+            {
+                let v2 = join_point.v2.lock().unwrap();
+                if let Some(ref val) = *v2 {
+                    ok = true;
+                }
+                    else {
+                        ok = false;
+                    }
             }
-            else {
-                join_point.v1.set(Some(v1));
+
+            if ok {
+                let join_point = match Arc::try_unwrap(join_point) {
+                    Ok(val) => val,
+                    _ => panic!("Process join failed."),
+                };
+
+                let val = join_point.v2.into_inner().unwrap().unwrap();
+                let continuation = join_point.continuation.into_inner().unwrap().unwrap();
+                continuation.call(runtime, (v1, val));
+            } else {
+                *join_point.v1.lock().unwrap() = Some(v1);
             }
         };
         let c2 = move |runtime: &mut Runtime, v2: Q::Value| {
-            let v1 = join_point2.v1.take();
-
-            if let Some(v1) = v1 {
-                join_point2.continuation.take().unwrap().call(runtime, (v1, v2));
-            }
-                else {
-                    join_point2.v2.set(Some(v2));
+            let mut ok;
+            {
+                let v1 = join_point2.v1.lock().unwrap();
+                if let Some(ref val) = *v1 {
+                    ok = true;
+                } else {
+                    ok = false;
                 }
+            }
+
+            if ok {
+                let join_point2 = match Arc::try_unwrap(join_point2) {
+                    Ok(val) => val,
+                    _ => panic!("Process join failed."),
+                };
+
+                let val = join_point2.v1.into_inner().unwrap().unwrap();
+                let continuation = join_point2.continuation.into_inner().unwrap().unwrap();
+                continuation.call(runtime, (val, v2));
+            } else {
+                *join_point2.v2.lock().unwrap() = Some(v2);
+            }
         };
         self.process1.call(runtime, c1);
         self.process2.call(runtime, c2);
     }
 }
 
-impl<P, Q> ProcessMut for Join<P, Q> where P: ProcessMut, Q:ProcessMut {
+impl<P, Q> ProcessMut for Join<P, Q>
+    where P: ProcessMut, Q: ProcessMut, P::Value: Send, Q::Value: Send {
     fn call_mut<C>(self, runtime: &mut Runtime, next: C)
         where Self: Sized, C: Continuation<(Self, Self::Value)>
     {
@@ -369,7 +399,7 @@ impl<P, V> ProcessMut for While<P> where P: ProcessMut, P: Process<Value=LoopSta
     }
 }
 
-
+/*
 use std::cell::RefCell;
 /// A shared pointer to a signal runtime.
 pub struct SignalRuntimeRef<V1, V2> where SignalRuntime<V1, V2>: Sized {
@@ -740,3 +770,4 @@ impl<V1, V2> Signal for MCSignal<V1, V2> where V1: 'static, V2: 'static + Clone 
 
 impl<V1, V2> SEmit for MCSignal<V1, V2> where V1: 'static, V2: 'static + Clone {}
 impl<V1, V2> SAwait for MCSignal<V1, V2> where V1: 'static, V2: 'static + Clone {}
+*/

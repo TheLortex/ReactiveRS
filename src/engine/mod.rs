@@ -1,51 +1,148 @@
 mod continuation;
 mod process;
 
+extern crate coco;
+extern crate itertools;
+
 use std;
 use self::continuation::Continuation;
 use self::process::Process;
 
+use self::coco::deque::{self, Worker, Stealer};
+use self::itertools::multizip;
+use self::itertools::Zip;
+
+use std::sync::{Arc, Barrier};
+use std::thread;
+
+
+
+pub struct Jobs {
+    cur_instant: Stealer<Box<Continuation<()>>>,
+    next_instant: Stealer<Box<Continuation<()>>>,
+    end_of_instant: Stealer<Box<Continuation<()>>>,
+}
+
+pub struct ParallelRuntime {
+    runtimes_jobs: Vec<Jobs>,
+}
+
+impl ParallelRuntime {
+    pub fn new(n_workers: usize) -> Arc<Self> {
+        // Create dequeue for jobs.
+        let (worker_job_cur_instant, stealer_job_cur_instant): (Vec<_>, Vec<_>) =
+            (0..n_workers).map(|_| deque::new()).unzip();
+
+        let (worker_job_next_instant, stealer_job_next_instant): (Vec<_>, Vec<_>) =
+            (0..n_workers).map(|_| deque::new()).unzip();
+
+        let (worker_job_end_of_instant, stealer_job_end_of_instant): (Vec<_>, Vec<_>) =
+            (0..n_workers).map(|_| deque::new()).unzip();
+
+        let jobs_as_tuples = multizip((stealer_job_cur_instant, stealer_job_next_instant, stealer_job_end_of_instant));
+
+        let jobs_iter = jobs_as_tuples.map(
+            |(cur_instant, next_instant, end_of_instant)| {
+                Jobs {cur_instant, next_instant, end_of_instant}
+            }
+        );
+
+        let mut jobs_vec = vec!();
+        jobs_vec.extend(jobs_iter);
+
+        let r = ParallelRuntime {
+            runtimes_jobs: jobs_vec,
+        };
+        let me = Arc::new(r);
+
+        let workers_as_tuples = itertools::multizip((worker_job_cur_instant, worker_job_next_instant, worker_job_end_of_instant));
+
+        let barrier = Arc::new(Barrier::new(n_workers));
+
+        for (i, (cur_instant, next_instant, end_of_instant)) in workers_as_tuples.enumerate() {
+            // spawn threads.
+            let mut runtime = Runtime::new(me.clone(), cur_instant, next_instant, end_of_instant);
+            let mut b = thread::Builder::new();
+            b = b.name("RRS Worker".to_string());
+
+            let c = barrier.clone();
+            let worker_continuation = move || {
+                // Thread main loop.
+                runtime.work(c);
+            };
+            b.spawn(worker_continuation).unwrap();
+        }
+
+        me.clone()
+    }
+}
+
 /// Runtime for executing reactive continuations.
 pub struct Runtime {
-    cur_instant:    Vec<Box<Continuation<()>>>,
-    next_instant:   Vec<Box<Continuation<()>>>,
-    end_of_instant: Vec<Box<Continuation<()>>>,
+    cur_instant:    Worker<Box<Continuation<()>>>,
+    next_instant:   Worker<Box<Continuation<()>>>,
+    end_of_instant: Worker<Box<Continuation<()>>>,
+    manager:        Arc<ParallelRuntime>,
 }
 
 
 impl Runtime {
     /// Creates a new `Runtime`.
-    pub fn new() -> Self {
-        Runtime { cur_instant: vec!(), next_instant: vec!(), end_of_instant: vec!() }
-    }
-
-    /// Executes instants until all work is completed.
-    pub fn execute(&mut self) {
-        while self.instant() {
-            continue;
+    pub fn new(manager: Arc<ParallelRuntime>,
+               cur_instant: Worker<Box<Continuation<()>>>,
+               next_instant: Worker<Box<Continuation<()>>>,
+               end_of_instant: Worker<Box<Continuation<()>>>) -> Self {
+        Runtime {
+            cur_instant,
+            next_instant,
+            end_of_instant,
+            manager,
         }
     }
 
-    /// Executes a single instant to completion. Indicates if more work remains to be done.
-    pub fn instant(&mut self) -> bool {
-        print!("-");
-        // We first execute all the continuations of the instant.
-        while let Some(c) = self.cur_instant.pop() {
-            c.call_box(self, ());
+    pub fn work(&mut self, synchro_barrier: Arc<Barrier>) {
+        loop {
+            // Step 1.
+
+            // Do all the local work.
+            while let Some(c) = self.cur_instant.pop() {
+                c.call_box(self, ());
+            }
+
+            // Try to steal work and unroll all local work then.
+            while let Some(c) = self.manager.runtimes_jobs.iter().filter_map(|job| {
+                job.cur_instant.steal()
+            }).next() {
+                c.call_box(self, ());
+
+                while let Some(c) = self.cur_instant.pop() {
+                    c.call_box(self, ());
+                }
+            }
+
+            // TODO: Sleep and try again here because some worker might add a lot of work to steal later.
+            synchro_barrier.wait();
+
+            // Step 2.
+            let mut end_of_instant = vec!();
+            while let Some(c) = self.end_of_instant.pop() {
+                end_of_instant.push(c)
+            }
+
+            while let Some(c) = self.next_instant.pop() {
+                self.cur_instant.push(c);
+            }
+
+            synchro_barrier.wait();
+
+            // Do all the local work.
+            while let Some(c) = end_of_instant.pop() {
+                c.call_box(self, ());
+            }
+
+            // TODO: Steal end_of_instant of other processes.
+            synchro_barrier.wait();
         }
-
-        // Then, we execute the end of instant continuations
-        let mut end_of_instant = vec!();
-        std::mem::swap(&mut end_of_instant, &mut self.end_of_instant);
-        std::mem::swap(&mut self.cur_instant, &mut self.next_instant);
-
-        while let Some(c) = end_of_instant.pop() {
-            c.call_box(self, ());
-        }
-
-        !(self.cur_instant.is_empty()
-            && self.end_of_instant.is_empty()
-            && self.next_instant.is_empty())
     }
 
     /// Registers a continuation to execute on the current instant.
@@ -69,13 +166,13 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 pub fn execute_process<P>(process: P) -> P::Value where P:Process {
-    let mut r = Runtime::new();
+   // let mut r = Runtime::new(1);
     let result: Rc<Cell<Option<P::Value>>> = Rc::new(Cell::new(None));
-    let result2 = result.clone();
+   /* let result2 = result.clone();
     process.call(&mut r, move|runtime: &mut Runtime, value: P::Value| {
         result2.set(Some(value));
     });
-    r.execute();
+    r.execute();*/
     result.take().unwrap()
 }
 
@@ -101,7 +198,8 @@ mod tests {
                 }));
             }));
         };
-        let mut r = Runtime::new();
+        let mut rt = ParallelRuntime::new();/*
+        let mut r = Runtime::new(rt);
         //    r.on_current_instant(Box::new(continuation_42));
         //    r.execute();
 
@@ -109,7 +207,7 @@ mod tests {
         r.execute();
         r.instant();
         r.instant();
-        r.instant();
+        r.instant();*/
         println!("<== test_42");
 
     }
@@ -121,12 +219,13 @@ mod tests {
         let c = (|r: &mut Runtime, ()| { println!("42") })
             .pause().pause();
 
-        let mut r = Runtime::new();
+        let mut rt = ParallelRuntime::new();/*
+        let mut r = Runtime::new(rt);
         r.on_current_instant(Box::new(c));
         r.instant();
         r.instant();
         r.instant();
-
+*/
         println!("<== test_pause");
     }
 
