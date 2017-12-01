@@ -13,7 +13,9 @@ use self::itertools::multizip;
 use self::itertools::Zip;
 
 use std::sync::{Arc, Barrier};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
+use std::thread::JoinHandle;
 
 
 
@@ -25,10 +27,11 @@ pub struct Jobs {
 
 pub struct ParallelRuntime {
     runtimes_jobs: Vec<Jobs>,
+    work_reader: Vec<Arc<AtomicBool>>,
 }
 
 impl ParallelRuntime {
-    pub fn new(n_workers: usize) -> Arc<Self> {
+    pub fn new(n_workers: usize, first_job: Box<Continuation<()>>) -> Arc<Self> {
         // Create dequeue for jobs.
         let (worker_job_cur_instant, stealer_job_cur_instant): (Vec<_>, Vec<_>) =
             (0..n_workers).map(|_| deque::new()).unzip();
@@ -47,21 +50,39 @@ impl ParallelRuntime {
             }
         );
 
+        let barrier = Arc::new(Barrier::new(n_workers));
+        let mut still_work_to_do= vec!() ;
+        let mut still_work_to_do_ref = vec!();
+        for _ in 0..n_workers {
+            let var = Arc::new(AtomicBool::new(true));
+            still_work_to_do_ref.push(var.clone());
+            still_work_to_do.push(var);
+        };
+
         let mut jobs_vec = vec!();
         jobs_vec.extend(jobs_iter);
 
         let r = ParallelRuntime {
             runtimes_jobs: jobs_vec,
+            work_reader: still_work_to_do_ref,
         };
         let me = Arc::new(r);
 
         let workers_as_tuples = itertools::multizip((worker_job_cur_instant, worker_job_next_instant, worker_job_end_of_instant));
 
-        let barrier = Arc::new(Barrier::new(n_workers));
+        let mut runtimes = vec!();
 
         for (i, (cur_instant, next_instant, end_of_instant)) in workers_as_tuples.enumerate() {
             // spawn threads.
-            let mut runtime = Runtime::new(me.clone(), cur_instant, next_instant, end_of_instant);
+            let mut runtime = Runtime::new(me.clone(), still_work_to_do.pop().unwrap(), cur_instant, next_instant, end_of_instant);
+            runtimes.push(runtime);
+        }
+
+        runtimes[0].on_current_instant(first_job);
+
+        let mut join_handles = vec!();
+
+        while let Some(mut runtime) = runtimes.pop() {
             let mut b = thread::Builder::new();
             b = b.name("RRS Worker".to_string());
 
@@ -70,8 +91,13 @@ impl ParallelRuntime {
                 // Thread main loop.
                 runtime.work(c);
             };
-            b.spawn(worker_continuation).unwrap();
+            let handle = b.spawn(worker_continuation).unwrap();
+            join_handles.push(handle);
         }
+
+        while let Some(x) = join_handles.pop() {
+            x.join();
+        };
 
         me.clone()
     }
@@ -83,12 +109,14 @@ pub struct Runtime {
     next_instant:   Worker<Box<Continuation<()>>>,
     end_of_instant: Worker<Box<Continuation<()>>>,
     manager:        Arc<ParallelRuntime>,
+    working_bool:   Arc<AtomicBool>,
 }
 
 
 impl Runtime {
     /// Creates a new `Runtime`.
     pub fn new(manager: Arc<ParallelRuntime>,
+               working_bool: Arc<AtomicBool>,
                cur_instant: Worker<Box<Continuation<()>>>,
                next_instant: Worker<Box<Continuation<()>>>,
                end_of_instant: Worker<Box<Continuation<()>>>) -> Self {
@@ -97,11 +125,13 @@ impl Runtime {
             next_instant,
             end_of_instant,
             manager,
+            working_bool,
         }
     }
 
     pub fn work(&mut self, synchro_barrier: Arc<Barrier>) {
         loop {
+            println!("iter");
             // Step 1.
 
             // Do all the local work.
@@ -141,8 +171,22 @@ impl Runtime {
             }
 
             // TODO: Steal end_of_instant of other processes.
+
+            let local_work_to_do = self.end_of_instant.len() > 0 || self.next_instant.len() > 0 || self.cur_instant.len() > 0;
+            self.working_bool.store(local_work_to_do, Ordering::Relaxed);
             synchro_barrier.wait();
-        }
+            let mut other_work_to_do = false;
+
+
+            for t in self.manager.work_reader.iter()  {
+                other_work_to_do |= t.load(Ordering::Relaxed);
+            }
+
+            if !other_work_to_do {
+                break;
+            }
+        };
+        println!("j'me tire");
     }
 
     /// Registers a continuation to execute on the current instant.
@@ -163,24 +207,31 @@ impl Runtime {
 }
 
 use std::cell::Cell;
-use std::rc::Rc;
+use std::sync::{Mutex};
 
-pub fn execute_process<P>(process: P) -> P::Value where P:Process {
+pub fn execute_process<P>(process: P) -> P::Value where P:Process, P::Value: Send {
    // let mut r = Runtime::new(1);
-    let result: Rc<Cell<Option<P::Value>>> = Rc::new(Cell::new(None));
-   /* let result2 = result.clone();
-    process.call(&mut r, move|runtime: &mut Runtime, value: P::Value| {
-        result2.set(Some(value));
-    });
-    r.execute();*/
-    result.take().unwrap()
+    let result: Arc<Mutex<Option<P::Value>>> = Arc::new(Mutex::new(None));
+    let result2 = result.clone();
+
+    let mut r = ParallelRuntime::new(4, Box::new(move |mut runtime: &mut Runtime, ()| {
+        process.call(&mut runtime, move|runtime: &mut Runtime, value: P::Value| {
+            *result2.lock().unwrap() = Some(value);
+        });
+    }));
+
+    let res = match Arc::try_unwrap(result) {
+        Ok(x) => x,
+        _ => panic!("Failed unwrap in execute_process"),
+    };
+    res.into_inner().unwrap().unwrap()
 }
 
 
 #[cfg(test)]
 mod tests {
     use engine::{Runtime, Continuation};
-    use engine::process::{Process, value, LoopStatus, ProcessMut, Signal, SEmit, PureSignal};
+    use engine::process::{Process, value, LoopStatus, ProcessMut};
     use engine::process;
     use engine;
 
@@ -197,8 +248,8 @@ mod tests {
                     println!("42");
                 }));
             }));
-        };
-        let mut rt = ParallelRuntime::new();/*
+        };/*
+        let mut rt = ParallelRuntime::new();
         let mut r = Runtime::new(rt);
         //    r.on_current_instant(Box::new(continuation_42));
         //    r.execute();
@@ -216,10 +267,10 @@ mod tests {
     fn test_pause() {
         println!("==> test_pause");
 
-        let c = (|r: &mut Runtime, ()| { println!("42") })
+    /*    let c = (|r: &mut Runtime, ()| { println!("42") })
             .pause().pause();
 
-        let mut rt = ParallelRuntime::new();/*
+        let mut rt = ParallelRuntime::new();
         let mut r = Runtime::new(rt);
         r.on_current_instant(Box::new(c));
         r.instant();
@@ -258,7 +309,7 @@ mod tests {
 
     #[test]
     fn test_then() {
-        let container = Rc::new(Cell::new(Some(0)));
+       /* let container = Rc::new(Cell::new(Some(0)));
         let container2 = container.clone();
         let container3 = container.clone();
 
@@ -276,12 +327,12 @@ mod tests {
         let p_times_2 = process::Value::new(()).map(times_2);
 
         engine::execute_process(p_plus_3.then(p_times_2));
-        assert_eq!(6, container3.take().unwrap());
+        assert_eq!(6, container3.take().unwrap());*/
     }
 
     #[test]
     fn test_join() {
-        let reward = Rc::new(Cell::new(Some(42)));
+    /*    let reward = Rc::new(Cell::new(Some(42)));
         let reward2 = reward.clone();
 
         let p = process::Value::new(reward).pause().pause().pause().pause()
@@ -297,12 +348,12 @@ mod tests {
                 v
             });
 
-        assert_eq!((None, Some(42)), engine::execute_process(p.join(q)));
+        assert_eq!((None, Some(42)), engine::execute_process(p.join(q)));*/
     }
 
     #[test]
     fn test_loop_while() {
-        println!("==> test_loop_while");
+     /*   println!("==> test_loop_while");
         let mut x = 10;
         let c = move |_| {
             x -= 1;
@@ -353,13 +404,13 @@ mod tests {
 
         let m = n / 2;
         assert_eq!((m * (m + 1), m * m), engine::execute_process(pbis.join(qbis)));
-        println!("<== test_loop_while");
+        println!("<== test_loop_while");*/
     }
 
     #[test]
     #[ignore]
     fn test_pure_signal() {
-        let s = PureSignal::new();
+        /*let s = PureSignal::new();
         let s2 = s.clone();
         let s3 = s.clone();
         let c1: fn(()) -> LoopStatus<()> = |_| {
@@ -407,6 +458,6 @@ mod tests {
         };
         let p2 = s.clone().emit(s.clone().await().map(print_v)).loop_inf();
         let p = p1.join(p2);
-        engine::execute_process(p);
+        engine::execute_process(p);*/
     }
 }
