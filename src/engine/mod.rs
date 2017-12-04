@@ -8,6 +8,7 @@ use std;
 use self::continuation::Continuation;
 use self::process::Process;
 
+/// TODO: Check if legal to use (compare with proposed method)
 use self::coco::deque::{self, Worker, Stealer};
 use self::itertools::multizip;
 use self::itertools::Zip;
@@ -51,6 +52,7 @@ impl ParallelRuntime {
         );
 
         let barrier = Arc::new(Barrier::new(n_workers));
+
         let mut still_work_to_do= vec!() ;
         let mut still_work_to_do_ref = vec!();
         for _ in 0..n_workers {
@@ -260,7 +262,28 @@ mod tests {
         r.instant();
         r.instant();*/
         println!("<== test_42");
+    }
 
+    #[test]
+    fn test_parallel_42() {
+        println!("==>");
+
+        let a = value(()).pause().map(|_| {
+            for i in 0..100000 {};
+            println!("42");
+        });
+
+        let b = value(()).pause().map(|_| {
+            for i in 0..100000 {};
+            println!("43");
+        });
+
+        let c = value(()).pause().map(|_| {
+            for i in 0..100000 {};
+            println!("44");
+        });
+
+        engine::execute_process(a.join(b).join(c));
     }
 
     #[test]
