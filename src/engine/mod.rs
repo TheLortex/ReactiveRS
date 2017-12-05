@@ -1,5 +1,6 @@
 mod continuation;
 mod process;
+mod signal;
 
 use std;
 use self::continuation::Continuation;
@@ -88,7 +89,8 @@ pub fn execute_process<P>(process: P) -> P::Value where P:Process {
 #[cfg(test)]
 mod tests {
     use engine::{Runtime, Continuation};
-    use engine::process::{Process, value, LoopStatus, ProcessMut, Signal, SEmit, PureSignal};
+    use engine::process::{Process, value, LoopStatus, ProcessMut};
+    use engine::signal::{Signal, SEmit, PureSignal};
     use engine::process;
     use engine;
 
@@ -279,7 +281,7 @@ mod tests {
             println!("s sent");
             LoopStatus::Continue
         };
-        let p1 = s.emit(Value::new(())).pause().pause().pause()
+        let p1 = s.emit(value(())).pause().pause().pause()
             .map(c1).loop_while();
         let c21 = |_| {
             println!("present");
@@ -305,7 +307,7 @@ mod tests {
         engine::execute_process(p);
     }
 
-    use engine::process::{MCSignal, SAwaitIn, Value};
+    use engine::signal::{MCSignal, SAwaitIn};
     #[test]
     #[ignore]
     fn test_mc_signal() {
@@ -323,7 +325,7 @@ mod tests {
         engine::execute_process(p);
     }
 
-    use engine::process::{MPSCSignal, SAwaitInConsume};
+    use engine::signal::{MPSCSignal, SAwaitInConsume};
     #[test]
     fn test_mpsc_signal() {
         pub struct TestStruct {
@@ -375,7 +377,7 @@ mod tests {
         assert_eq!(engine::execute_process(p), (11, 10));
     }
 
-    use engine::process::{SPMCSignal, SPMCSignalSender, SAwaitOneImmediate, SEmitConsume};
+    use engine::signal::{SPMCSignal, SPMCSignalSender, SAwaitOneImmediate, SEmitConsume};
     #[test]
     fn test_spmc_signal() {
 
