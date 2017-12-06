@@ -17,46 +17,52 @@ use std::sync::{Arc, Barrier};
 use std::sync::atomic::{AtomicIsize, Ordering};
 use std::thread;
 use std::thread::JoinHandle;
-
+use std::borrow::BorrowMut;
 
 type JobStealer = Stealer<Box<Continuation<()>>>;
 
 pub struct ParallelRuntime {
+    shared_data: Arc<SharedData>,
+    runtimes: Vec<Runtime>,
+}
+
+pub struct SharedData {
     runtimes_jobs: Vec<JobStealer>,
     n_local_working: AtomicIsize,
     n_global_working: AtomicIsize,
     sync_barrier: Barrier,
-
 }
 
 impl ParallelRuntime {
-    pub fn new(n_workers: usize, first_job: Box<Continuation<()>>) -> Arc<Self> {
+    pub fn new(n_workers: usize, first_job: Box<Continuation<()>>) -> Self {
         // Create dequeue for jobs.
         let (mut worker_job_cur_instant, stealer_job_cur_instant): (Vec<_>, Vec<_>) =
             (0..n_workers).map(|_| deque::new()).unzip();
 
 
-        let r = ParallelRuntime {
+        let shared_data = SharedData {
             runtimes_jobs: stealer_job_cur_instant,
             n_local_working: AtomicIsize::new(0),
             n_global_working: AtomicIsize::new(0),
             sync_barrier: Barrier::new(n_workers),
         };
-        let me = Arc::new(r);
 
-        let mut runtimes = vec!();
+        let mut r = ParallelRuntime {
+            shared_data: Arc::new(shared_data),
+            runtimes: vec!(),
+        };
 
         while let Some(cur_instant_worker) = worker_job_cur_instant.pop() {
             // spawn threads.
-            let mut runtime = Runtime::new(me.clone(), cur_instant_worker);
-            runtimes.push(runtime);
+            let mut runtime = Runtime::new(r.shared_data.clone(), cur_instant_worker);
+            r.runtimes.push(runtime);
         }
 
-        runtimes[0].on_current_instant(first_job);
+        r.runtimes[0].on_current_instant(first_job);
 
         let mut join_handles = vec!();
 
-        while let Some(mut runtime) = runtimes.pop() {
+        while let Some(mut runtime) = r.runtimes.pop() {
             let mut b = thread::Builder::new();
             b = b.name("RRS Worker".to_string());
 
@@ -72,7 +78,7 @@ impl ParallelRuntime {
             x.join();
         };
 
-        me.clone()
+        r
     }
 }
 
@@ -81,13 +87,13 @@ pub struct Runtime {
     cur_instant:    Worker<Box<Continuation<()>>>,
     next_instant:   Vec<Box<Continuation<()>>>,
     end_of_instant: Vec<Box<Continuation<()>>>,
-    manager:        Arc<ParallelRuntime>,
+    manager:        Arc<SharedData>,
 }
 
 
 impl Runtime {
     /// Creates a new `Runtime`.
-    pub fn new(manager: Arc<ParallelRuntime>,
+    pub fn new(manager: Arc<SharedData>,
                cur_instant: Worker<Box<Continuation<()>>>) -> Self {
         Runtime {
             cur_instant,
