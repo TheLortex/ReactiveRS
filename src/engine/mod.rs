@@ -14,69 +14,41 @@ use self::itertools::multizip;
 use self::itertools::Zip;
 
 use std::sync::{Arc, Barrier};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicIsize, Ordering};
 use std::thread;
 use std::thread::JoinHandle;
 
 
-
-pub struct Jobs {
-    cur_instant: Stealer<Box<Continuation<()>>>,
-    next_instant: Stealer<Box<Continuation<()>>>,
-    end_of_instant: Stealer<Box<Continuation<()>>>,
-}
+type JobStealer = Stealer<Box<Continuation<()>>>;
 
 pub struct ParallelRuntime {
-    runtimes_jobs: Vec<Jobs>,
-    work_reader: Vec<Arc<AtomicBool>>,
+    runtimes_jobs: Vec<JobStealer>,
+    n_local_working: AtomicIsize,
+    n_global_working: AtomicIsize,
+    sync_barrier: Barrier,
+
 }
 
 impl ParallelRuntime {
     pub fn new(n_workers: usize, first_job: Box<Continuation<()>>) -> Arc<Self> {
         // Create dequeue for jobs.
-        let (worker_job_cur_instant, stealer_job_cur_instant): (Vec<_>, Vec<_>) =
+        let (mut worker_job_cur_instant, stealer_job_cur_instant): (Vec<_>, Vec<_>) =
             (0..n_workers).map(|_| deque::new()).unzip();
 
-        let (worker_job_next_instant, stealer_job_next_instant): (Vec<_>, Vec<_>) =
-            (0..n_workers).map(|_| deque::new()).unzip();
-
-        let (worker_job_end_of_instant, stealer_job_end_of_instant): (Vec<_>, Vec<_>) =
-            (0..n_workers).map(|_| deque::new()).unzip();
-
-        let jobs_as_tuples = multizip((stealer_job_cur_instant, stealer_job_next_instant, stealer_job_end_of_instant));
-
-        let jobs_iter = jobs_as_tuples.map(
-            |(cur_instant, next_instant, end_of_instant)| {
-                Jobs {cur_instant, next_instant, end_of_instant}
-            }
-        );
-
-        let barrier = Arc::new(Barrier::new(n_workers));
-
-        let mut still_work_to_do= vec!() ;
-        let mut still_work_to_do_ref = vec!();
-        for _ in 0..n_workers {
-            let var = Arc::new(AtomicBool::new(true));
-            still_work_to_do_ref.push(var.clone());
-            still_work_to_do.push(var);
-        };
-
-        let mut jobs_vec = vec!();
-        jobs_vec.extend(jobs_iter);
 
         let r = ParallelRuntime {
-            runtimes_jobs: jobs_vec,
-            work_reader: still_work_to_do_ref,
+            runtimes_jobs: stealer_job_cur_instant,
+            n_local_working: AtomicIsize::new(0),
+            n_global_working: AtomicIsize::new(0),
+            sync_barrier: Barrier::new(n_workers),
         };
         let me = Arc::new(r);
 
-        let workers_as_tuples = itertools::multizip((worker_job_cur_instant, worker_job_next_instant, worker_job_end_of_instant));
-
         let mut runtimes = vec!();
 
-        for (i, (cur_instant, next_instant, end_of_instant)) in workers_as_tuples.enumerate() {
+        while let Some(cur_instant_worker) = worker_job_cur_instant.pop() {
             // spawn threads.
-            let mut runtime = Runtime::new(me.clone(), still_work_to_do.pop().unwrap(), cur_instant, next_instant, end_of_instant);
+            let mut runtime = Runtime::new(me.clone(), cur_instant_worker);
             runtimes.push(runtime);
         }
 
@@ -88,10 +60,9 @@ impl ParallelRuntime {
             let mut b = thread::Builder::new();
             b = b.name("RRS Worker".to_string());
 
-            let c = barrier.clone();
             let worker_continuation = move || {
                 // Thread main loop.
-                runtime.work(c);
+                runtime.work();
             };
             let handle = b.spawn(worker_continuation).unwrap();
             join_handles.push(handle);
@@ -108,30 +79,25 @@ impl ParallelRuntime {
 /// Runtime for executing reactive continuations.
 pub struct Runtime {
     cur_instant:    Worker<Box<Continuation<()>>>,
-    next_instant:   Worker<Box<Continuation<()>>>,
-    end_of_instant: Worker<Box<Continuation<()>>>,
+    next_instant:   Vec<Box<Continuation<()>>>,
+    end_of_instant: Vec<Box<Continuation<()>>>,
     manager:        Arc<ParallelRuntime>,
-    working_bool:   Arc<AtomicBool>,
 }
 
 
 impl Runtime {
     /// Creates a new `Runtime`.
     pub fn new(manager: Arc<ParallelRuntime>,
-               working_bool: Arc<AtomicBool>,
-               cur_instant: Worker<Box<Continuation<()>>>,
-               next_instant: Worker<Box<Continuation<()>>>,
-               end_of_instant: Worker<Box<Continuation<()>>>) -> Self {
+               cur_instant: Worker<Box<Continuation<()>>>) -> Self {
         Runtime {
             cur_instant,
-            next_instant,
-            end_of_instant,
+            next_instant: vec!(),
+            end_of_instant: vec!(),
             manager,
-            working_bool,
         }
     }
 
-    pub fn work(&mut self, synchro_barrier: Arc<Barrier>) {
+    pub fn work(&mut self) {
         loop {
             println!("iter");
             // Step 1.
@@ -143,7 +109,7 @@ impl Runtime {
 
             // Try to steal work and unroll all local work then.
             while let Some(c) = self.manager.runtimes_jobs.iter().filter_map(|job| {
-                job.cur_instant.steal()
+                job.steal()
             }).next() {
                 c.call_box(self, ());
 
@@ -153,7 +119,9 @@ impl Runtime {
             }
 
             // TODO: Sleep and try again here because some worker might add a lot of work to steal later.
-            synchro_barrier.wait();
+            if self.manager.sync_barrier.wait().is_leader() {
+                self.manager.n_global_working.store(0, Ordering::Relaxed);
+            }
 
             // Step 2.
             let mut end_of_instant = vec!();
@@ -165,7 +133,7 @@ impl Runtime {
                 self.cur_instant.push(c);
             }
 
-            synchro_barrier.wait();
+            self.manager.sync_barrier.wait();
 
             // Do all the local work.
             while let Some(c) = end_of_instant.pop() {
@@ -175,18 +143,20 @@ impl Runtime {
             // TODO: Steal end_of_instant of other processes.
 
             let local_work_to_do = self.end_of_instant.len() > 0 || self.next_instant.len() > 0 || self.cur_instant.len() > 0;
-            self.working_bool.store(local_work_to_do, Ordering::Relaxed);
-            synchro_barrier.wait();
-            let mut other_work_to_do = false;
 
-
-            for t in self.manager.work_reader.iter()  {
-                other_work_to_do |= t.load(Ordering::Relaxed);
+            // Here n_global_working should be equal to zero.
+            if local_work_to_do {
+                self.manager.n_global_working.fetch_add(1, Ordering::Relaxed);
             }
 
-            if !other_work_to_do {
+            self.manager.sync_barrier.wait();
+
+            let work_to_do = self.manager.n_global_working.load(Ordering::Relaxed) > 0;
+
+            if !work_to_do {
                 break;
             }
+
         };
         println!("j'me tire");
     }
