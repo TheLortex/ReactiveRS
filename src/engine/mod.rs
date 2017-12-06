@@ -115,23 +115,36 @@ impl Runtime {
             println!("iter");
             // Step 1.
 
-            // Do all the local work.
+            /// Do all the local work.
+            self.manager.n_local_working.fetch_add(1, Ordering::Relaxed);
             while let Some(c) = self.cur_instant.pop() {
                 c.call_box(self, ());
             }
+            self.manager.n_local_working.fetch_add(-1, Ordering::Relaxed);
 
-            // Try to steal work and unroll all local work then.
-            while let Some(c) = self.manager.runtimes_jobs.iter().filter_map(|job| {
-                job.steal()
-            }).next() {
-                c.call_box(self, ());
+            /// While someone is working (and might add something on his queue)
+            while self.manager.n_local_working.load(Ordering::Relaxed) > 0 {
+                let mut stolen = false;
 
-                while let Some(c) = self.cur_instant.pop() {
+                /// Try to steal work and unroll all local work then.
+                while let Some(c) = self.manager.runtimes_jobs.iter().filter_map(|job| {
+                    job.steal()
+                }).next() {
+                    stolen = true;
+                    self.manager.n_local_working.fetch_add(1, Ordering::Relaxed);
                     c.call_box(self, ());
+
+                    while let Some(c) = self.cur_instant.pop() {
+                        c.call_box(self, ());
+                    }
+                    self.manager.n_local_working.fetch_add(-1, Ordering::Relaxed);
+                }
+
+                if !stolen {
+                    thread::sleep_ms(10);
                 }
             }
 
-            // TODO: Sleep and try again here because some worker might add a lot of work to steal later.
             if self.manager.sync_barrier.wait().is_leader() {
                 self.manager.n_global_working.store(0, Ordering::Relaxed);
             }
@@ -152,8 +165,6 @@ impl Runtime {
             while let Some(c) = end_of_instant.pop() {
                 c.call_box(self, ());
             }
-
-            // TODO: Steal end_of_instant of other processes.
 
             let local_work_to_do = self.end_of_instant.len() > 0 || self.next_instant.len() > 0 || self.cur_instant.len() > 0;
 
@@ -256,17 +267,17 @@ mod tests {
         println!("==>");
 
         let a = value(()).pause().map(|_| {
-            for i in 0..100000 {};
+            for i in 0..1000000 {};
             println!("42");
         });
 
         let b = value(()).pause().map(|_| {
-            for i in 0..100000 {};
+            for i in 0..1000000 {};
             println!("43");
         });
 
         let c = value(()).pause().map(|_| {
-            for i in 0..100000 {};
+            for i in 0..1000000 {};
             println!("44");
         });
 
