@@ -34,12 +34,12 @@ pub struct SharedData {
 }
 
 impl ParallelRuntime {
-    pub fn new(n_workers: usize, first_job: Box<Continuation<()>>) -> Self {
-        // Create dequeue for jobs.
+    pub fn new(n_workers: usize) -> Self {
+        /// Create dequeue for jobs.
         let (mut worker_job_cur_instant, stealer_job_cur_instant): (Vec<_>, Vec<_>) =
             (0..n_workers).map(|_| deque::new()).unzip();
 
-
+        /// Shared data structure between workers.
         let shared_data = SharedData {
             runtimes_jobs: stealer_job_cur_instant,
             n_local_working: AtomicIsize::new(0),
@@ -47,38 +47,45 @@ impl ParallelRuntime {
             sync_barrier: Barrier::new(n_workers),
         };
 
+        /// Instantiation of ParallelRuntime.
         let mut r = ParallelRuntime {
             shared_data: Arc::new(shared_data),
             runtimes: vec!(),
         };
 
+        /// Creation of workers.
         while let Some(cur_instant_worker) = worker_job_cur_instant.pop() {
             // spawn threads.
             let mut runtime = Runtime::new(r.shared_data.clone(), cur_instant_worker);
             r.runtimes.push(runtime);
-        }
+        };
 
-        r.runtimes[0].on_current_instant(first_job);
+        r
+    }
+
+    pub fn execute(&mut self, job: Box<Continuation<()>>) {
+        self.runtimes[0].on_current_instant(job);
 
         let mut join_handles = vec!();
 
-        while let Some(mut runtime) = r.runtimes.pop() {
+        /// Start workers.
+        while let Some(mut runtime) = self.runtimes.pop() {
             let mut b = thread::Builder::new();
             b = b.name("RRS Worker".to_string());
 
             let worker_continuation = move || {
                 // Thread main loop.
                 runtime.work();
+                runtime
             };
             let handle = b.spawn(worker_continuation).unwrap();
             join_handles.push(handle);
         }
 
+        /// Wait for work to be done.
         while let Some(x) = join_handles.pop() {
-            x.join();
+            self.runtimes.push(x.join().unwrap());
         };
-
-        r
     }
 }
 
@@ -188,15 +195,19 @@ use std::cell::Cell;
 use std::sync::{Mutex};
 
 pub fn execute_process<P>(process: P) -> P::Value where P:Process, P::Value: Send {
-   // let mut r = Runtime::new(1);
+    // let mut r = Runtime::new(1);
     let result: Arc<Mutex<Option<P::Value>>> = Arc::new(Mutex::new(None));
     let result2 = result.clone();
 
-    let mut r = ParallelRuntime::new(4, Box::new(move |mut runtime: &mut Runtime, ()| {
+    let mut r = ParallelRuntime::new(4);
+
+    let todo = Box::new(move |mut runtime: &mut Runtime, ()| {
         process.call(&mut runtime, move|runtime: &mut Runtime, value: P::Value| {
             *result2.lock().unwrap() = Some(value);
         });
-    }));
+    });
+
+    r.execute(todo);
 
     let res = match Arc::try_unwrap(result) {
         Ok(x) => x,
@@ -266,16 +277,16 @@ mod tests {
     fn test_pause() {
         println!("==> test_pause");
 
-    /*    let c = (|r: &mut Runtime, ()| { println!("42") })
-            .pause().pause();
+        /*    let c = (|r: &mut Runtime, ()| { println!("42") })
+                .pause().pause();
 
-        let mut rt = ParallelRuntime::new();
-        let mut r = Runtime::new(rt);
-        r.on_current_instant(Box::new(c));
-        r.instant();
-        r.instant();
-        r.instant();
-*/
+            let mut rt = ParallelRuntime::new();
+            let mut r = Runtime::new(rt);
+            r.on_current_instant(Box::new(c));
+            r.instant();
+            r.instant();
+            r.instant();
+    */
         println!("<== test_pause");
     }
 
@@ -308,102 +319,102 @@ mod tests {
 
     #[test]
     fn test_then() {
-       /* let container = Rc::new(Cell::new(Some(0)));
-        let container2 = container.clone();
-        let container3 = container.clone();
+        /* let container = Rc::new(Cell::new(Some(0)));
+         let container2 = container.clone();
+         let container3 = container.clone();
 
-        let plus_3 = move |_| {
-            let v = container.take().unwrap();
-            container.set(Some(v+3))
-        };
+         let plus_3 = move |_| {
+             let v = container.take().unwrap();
+             container.set(Some(v+3))
+         };
 
-        let times_2 = move |_| {
-            let v = container2.take().unwrap();
-            container2.set(Some(v*2))
-        };
+         let times_2 = move |_| {
+             let v = container2.take().unwrap();
+             container2.set(Some(v*2))
+         };
 
-        let p_plus_3 = process::Value::new(()).map(plus_3);
-        let p_times_2 = process::Value::new(()).map(times_2);
+         let p_plus_3 = process::Value::new(()).map(plus_3);
+         let p_times_2 = process::Value::new(()).map(times_2);
 
-        engine::execute_process(p_plus_3.then(p_times_2));
-        assert_eq!(6, container3.take().unwrap());*/
+         engine::execute_process(p_plus_3.then(p_times_2));
+         assert_eq!(6, container3.take().unwrap());*/
     }
 
     #[test]
     fn test_join() {
-    /*    let reward = Rc::new(Cell::new(Some(42)));
-        let reward2 = reward.clone();
+        /*    let reward = Rc::new(Cell::new(Some(42)));
+            let reward2 = reward.clone();
 
-        let p = process::Value::new(reward).pause().pause().pause().pause()
-            .map(|v| {
-                let v = v.take();
-                println!("Process p {:?}", v);
-                v
-            });
-        let q = process::Value::new(reward2).pause().pause().pause()
-            .map(|v| {
-                let v = v.take();
-                println!("Process q {:?}", v);
-                v
-            });
+            let p = process::Value::new(reward).pause().pause().pause().pause()
+                .map(|v| {
+                    let v = v.take();
+                    println!("Process p {:?}", v);
+                    v
+                });
+            let q = process::Value::new(reward2).pause().pause().pause()
+                .map(|v| {
+                    let v = v.take();
+                    println!("Process q {:?}", v);
+                    v
+                });
 
-        assert_eq!((None, Some(42)), engine::execute_process(p.join(q)));*/
+            assert_eq!((None, Some(42)), engine::execute_process(p.join(q)));*/
     }
 
     #[test]
     fn test_loop_while() {
-     /*   println!("==> test_loop_while");
-        let mut x = 10;
-        let c = move |_| {
-            x -= 1;
-            if x == 0 {
-                LoopStatus::Exit(42)
-            } else {
-                LoopStatus::Continue
-            }
-        };
-        let p = process::Value::new(()).map(c);
-        assert_eq!(42, engine::execute_process(p.pause().loop_while()));
+        /*   println!("==> test_loop_while");
+           let mut x = 10;
+           let c = move |_| {
+               x -= 1;
+               if x == 0 {
+                   LoopStatus::Exit(42)
+               } else {
+                   LoopStatus::Continue
+               }
+           };
+           let p = process::Value::new(()).map(c);
+           assert_eq!(42, engine::execute_process(p.pause().loop_while()));
 
-        let n = 10;
-        let reward = Rc::new(Cell::new(Some(n)));
-        let reward2 = reward.clone();
+           let n = 10;
+           let reward = Rc::new(Cell::new(Some(n)));
+           let reward2 = reward.clone();
 
-        let mut tot1 = 0;
-        let mut tot2 = 0;
-        let c1 = move |_| {
-            let v = reward.take().unwrap();
-            reward.set(Some(v-1));
-            if v <= 0 {
-                LoopStatus::Exit(tot1)
-            } else {
-                tot1 += v;
-                LoopStatus::Continue
-            }
-        };
-        let c2 = move |_| {
-            let v = reward2.take().unwrap();
-            reward2.set(Some(v-1));
-            if v <= 0 {
-                process::Value::new(LoopStatus::Exit(tot2))
-            } else {
-                tot2 += v;
-                process::Value::new(LoopStatus::Continue)
-            }
-        };
+           let mut tot1 = 0;
+           let mut tot2 = 0;
+           let c1 = move |_| {
+               let v = reward.take().unwrap();
+               reward.set(Some(v-1));
+               if v <= 0 {
+                   LoopStatus::Exit(tot1)
+               } else {
+                   tot1 += v;
+                   LoopStatus::Continue
+               }
+           };
+           let c2 = move |_| {
+               let v = reward2.take().unwrap();
+               reward2.set(Some(v-1));
+               if v <= 0 {
+                   process::Value::new(LoopStatus::Exit(tot2))
+               } else {
+                   tot2 += v;
+                   process::Value::new(LoopStatus::Continue)
+               }
+           };
 
-        let p = process::Value::new(()).pause().pause()
-            .map(c1);
-        let q = process::Value::new(()).pause().pause()
-            .and_then(c2);
+           let p = process::Value::new(()).pause().pause()
+               .map(c1);
+           let q = process::Value::new(()).pause().pause()
+               .and_then(c2);
 
-        let pbis = p.loop_while();
-        let qloop = q.loop_while();
-        let qbis = process::Value::new(()).pause().then(qloop);
+           let pbis = p.loop_while();
+           let qloop = q.loop_while();
+           let qbis = process::Value::new(()).pause().then(qloop);
 
-        let m = n / 2;
-        assert_eq!((m * (m + 1), m * m), engine::execute_process(pbis.join(qbis)));
-        println!("<== test_loop_while");*/
+           let m = n / 2;
+           assert_eq!((m * (m + 1), m * m), engine::execute_process(pbis.join(qbis)));
+           println!("<== test_loop_while");*/
     }
 
     #[test]
