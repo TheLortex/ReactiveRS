@@ -239,31 +239,29 @@ mod tests {
     use engine::process;
     use engine;
 
-    use std::rc::Rc;
-    use std::cell::Cell;
-
-    #[test]
-    fn test_42() {
-        println!("==> test_42");
-
-        let continuation_42 = |r: &mut Runtime, v: ()| {
-            r.on_next_instant(Box::new(|r: &mut Runtime, v: ()| {
-                r.on_next_instant(Box::new(|r: &mut Runtime, v: ()| {
-                    println!("42");
-                }));
-            }));
-        };
-        let mut r = Runtime::new();
-        //    r.on_current_instant(Box::new(continuation_42));
-        //    r.execute();
-
-        r.on_current_instant(Box::new(continuation_42));
-        r.execute();
-        r.instant();
-        r.instant();
-        r.instant();
-        println!("<== test_42");
-    }
+    use std::sync::{Arc, Mutex};
+//    #[test]
+//    fn test_42() {
+//        println!("==> test_42");
+//
+//        let continuation_42 = |r: &mut Runtime, v: ()| {
+//            r.on_next_instant(Box::new(|r: &mut Runtime, v: ()| {
+//                r.on_next_instant(Box::new(|r: &mut Runtime, v: ()| {
+//                    println!("42");
+//                }));
+//            }));
+//        };
+//        let mut r = Runtime::new();
+//        //    r.on_current_instant(Box::new(continuation_42));
+//        //    r.execute();
+//
+//        r.on_current_instant(Box::new(continuation_42));
+//        r.execute();
+//        r.instant();
+//        r.instant();
+//        r.instant();
+//        println!("<== test_42");
+//    }
 
     #[test]
     fn test_parallel_42() {
@@ -287,21 +285,21 @@ mod tests {
         engine::execute_process(a.join(b).join(c));
     }
 
-    #[test]
-    fn test_pause() {
-        println!("==> test_pause");
-
-        let c = (|r: &mut Runtime, ()| { println!("42") })
-            .pause().pause();
-
-        let mut r = Runtime::new();
-        r.on_current_instant(Box::new(c));
-        r.instant();
-        r.instant();
-        r.instant();
-
-        println!("<== test_pause");
-    }
+//    #[test]
+//    fn test_pause() {
+//        println!("==> test_pause");
+//
+//        let c = (|r: &mut Runtime, ()| { println!("42") })
+//            .pause().pause();
+//
+//        let mut r = Runtime::new();
+//        r.on_current_instant(Box::new(c));
+//        r.instant();
+//        r.instant();
+//        r.instant();
+//
+//        println!("<== test_pause");
+//    }
 
     #[test]
     fn test_process() {
@@ -332,25 +330,27 @@ mod tests {
 
     #[test]
     fn test_then() {
-        let container = Rc::new(Cell::new(Some(0)));
+        let container = Arc::new(Mutex::new(Some(0)));
         let container2 = container.clone();
         let container3 = container.clone();
 
         let plus_3 = move |_| {
-            let v = container.take().unwrap();
-            container.set(Some(v+3))
+            let mut opt_v = container.lock().unwrap();
+            let v = opt_v.unwrap();
+            *opt_v = (Some(v+3));
         };
 
         let times_2 = move |_| {
-            let v = container2.take().unwrap();
-            container2.set(Some(v*2))
+            let mut opt_v = container2.lock().unwrap();
+            let v = opt_v.unwrap();
+            *opt_v = (Some(v*2));
         };
 
         let p_plus_3 = process::Value::new(()).map(plus_3);
         let p_times_2 = process::Value::new(()).map(times_2);
 
-        engine::execute_process(p_plus_3.then(p_times_2));
-        assert_eq!(6, container3.take().unwrap());
+        engine::execute_process(p_plus_3.then(p_times_2.pause()));
+        assert_eq!(6, container3.lock().unwrap().unwrap());
     }
 
     #[test]
@@ -364,20 +364,24 @@ mod tests {
 
     #[test]
     fn test_join() {
-        let reward = Rc::new(Cell::new(Some(42)));
+        let reward = Arc::new(Mutex::new(Some(42)));
         let reward2 = reward.clone();
 
         let p = process::Value::new(reward).pause().pause().pause().pause()
             .map(|v| {
-                let v = v.take();
-                println!("Process p {:?}", v);
-                v
+                let mut v = v.lock().unwrap();
+                println!("Process p {:?}", *v);
+                let x = *v;
+                *v = None;
+                x
             });
         let q = process::Value::new(reward2).pause().pause().pause()
             .map(|v| {
-                let v = v.take();
-                println!("Process q {:?}", v);
-                v
+                let mut v = v.lock().unwrap();
+                println!("Process q {:?}", *v);
+                let x = *v;
+                *v = None;
+                x
             });
 
         assert_eq!((None, Some(42)), engine::execute_process(p.join(q)));
@@ -386,27 +390,16 @@ mod tests {
     #[test]
     fn test_loop_while() {
         println!("==> test_loop_while");
-        let mut x = 10;
-        let c = move |_| {
-            x -= 1;
-            if x == 0 {
-                LoopStatus::Exit(42)
-            } else {
-                LoopStatus::Continue
-            }
-        };
-        let p = process::Value::new(()).map(c);
-        assert_eq!(42, engine::execute_process(p.pause().loop_while()));
-
         let n = 10;
-        let reward = Rc::new(Cell::new(Some(n)));
+        let reward = Arc::new(Mutex::new(Some(n)));
         let reward2 = reward.clone();
 
         let mut tot1 = 0;
         let mut tot2 = 0;
         let c1 = move |_| {
-            let v = reward.take().unwrap();
-            reward.set(Some(v-1));
+            let mut opt_r1 = reward.lock().unwrap();
+            let v = opt_r1.unwrap();
+            *opt_r1 = (Some(v-1));
             if v <= 0 {
                 LoopStatus::Exit(tot1)
             } else {
@@ -415,8 +408,9 @@ mod tests {
             }
         };
         let c2 = move |_| {
-            let v = reward2.take().unwrap();
-            reward2.set(Some(v-1));
+            let mut opt_r2 = reward2.lock().unwrap();
+            let v = opt_r2.unwrap();
+            *opt_r2 = (Some(v-1));
             if v <= 0 {
                 process::Value::new(LoopStatus::Exit(tot2))
             } else {
@@ -437,6 +431,22 @@ mod tests {
         let m = n / 2;
         assert_eq!((m * (m + 1), m * m), engine::execute_process(pbis.join(qbis)));
         println!("<== test_loop_while");
+    }
+
+    #[test]
+    #[ignore]
+    fn test_while_perf() {
+        let mut x = 100000;
+        let c = move |_| {
+            x -= 1;
+            if x == 0 {
+                LoopStatus::Exit(42)
+            } else {
+                LoopStatus::Continue
+            }
+        };
+        let p = process::Value::new(()).map(c);
+        assert_eq!(42, engine::execute_process(p.pause().loop_while()));
     }
 
     #[test]
