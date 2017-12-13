@@ -1,6 +1,6 @@
 mod continuation;
-mod process;
-mod signal;
+pub mod process;
+pub mod signal;
 
 extern crate coco;
 extern crate itertools;
@@ -113,7 +113,7 @@ impl Runtime {
 
     pub fn work(&mut self) {
         loop {
-            println!("iter");
+//            println!("iter");
             // Step 1.
 
             /// Do all the local work.

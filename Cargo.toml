@@ -6,3 +6,11 @@ authors = ["martin"]
 [dependencies]
 coco = "0.3.3"
 itertools = "0.6.1"
+
+[lib]
+name = "reactivers"
+path = "src/lib.rs"
+
+[[bin]]
+name = "trafficsim"
+path = "src/main.rs"

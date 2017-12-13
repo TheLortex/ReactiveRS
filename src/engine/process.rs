@@ -2,6 +2,7 @@ use super::Runtime;
 use super::continuation::Continuation;
 use std::cell::Cell;
 use std::sync::{Arc, Mutex};
+use super::signal::*;
 
 /// A reactive process.
 pub trait Process: 'static + Send{
@@ -54,6 +55,12 @@ pub trait Process: 'static + Send{
     fn then_else<Q1, Q2>(self, q1: Q1, q2: Q2) -> ThenElse<Self, Q1, Q2>
         where Self: Process<Value=bool> + Sized, Q1: Process, Q2: Process<Value=Q1::Value> {
         ThenElse { condition: self, q1, q2}
+    }
+
+    fn emit<S>(self, s: S) -> Emit<S, Self>
+        where S: SEmit + Sized, Self: Sized, Self: Process<Value=<S::VR as ValueRuntime>::V1>
+    {
+        s.emit(self)
     }
 }
 
