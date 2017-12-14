@@ -57,8 +57,14 @@ pub trait Process: 'static + Send{
         ThenElse { condition: self, q1, q2}
     }
 
-    fn emit<S>(self, s: S) -> Emit<S, Self>
+    fn emit<S>(self, s: &S) -> Emit<S, Self>
         where S: SEmit + Sized, Self: Sized, Self: Process<Value=<S::VR as ValueRuntime>::V1>
+    {
+        s.emit(self)
+    }
+
+    fn emit_consume<S>(self, s: S) -> Emit<S, Self>
+        where S: SEmitConsume + Sized, Self: Sized, Self: Process<Value=<S::VR as ValueRuntime>::V1>
     {
         s.emit(self)
     }

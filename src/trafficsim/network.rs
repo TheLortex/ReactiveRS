@@ -2,7 +2,7 @@ pub type NodeId = usize;
 pub type EdgeId = usize;
 
 pub type NodeInfo = i32;
-pub type EdgeInfo = i32;
+pub type EdgeInfo = usize;
 
 pub struct Node {
     id: NodeId,
