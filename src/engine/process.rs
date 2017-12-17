@@ -46,8 +46,13 @@ pub trait Process: 'static + Send{
 
     /// Creates a new process that executes the two processes in parallel, and returns the couple of
     /// their return values.
-    fn join<P>(self, process: P) -> Join<Self, P> where Self: Sized, P: Sized {
+    fn join<P>(self, process: P) -> Join<Self, P> where Self: Sized, P: Process + Sized {
         Join {process1: self, process2: process}
+    }
+
+    fn multi_join<P>(self, ps: Vec<P>) -> Join<Self, MultiJoin<P>>
+        where Self: Sized, P: Process + Sized, P::Value: Send {
+        self.join(MultiJoin { ps })
     }
 
     /// Creates a new process that executes process `q1` if the result of `Self` is true, and `q2`
@@ -364,6 +369,83 @@ impl<P, Q> ProcessMut for Join<P, Q>
             .map(|((p1, v1), (p2, v2))| {
                 (p1.join(p2), (v1, v2))
             }).call(runtime, next);
+    }
+}
+
+pub struct MultiJoin<P> {
+    ps: Vec<P>,
+}
+
+pub struct MultiJoinPoint<V, C> where C: Continuation<Vec<V>> {
+    remaining: Mutex<usize>,
+    value: Mutex<Vec<Option<V>>>,
+    continuation: Mutex<Option<C>>,
+}
+
+pub fn multi_join<P>(ps: Vec<P>) -> MultiJoin<P> {
+    MultiJoin { ps }
+}
+
+impl<P> Process for MultiJoin<P>
+    where P: Process, P::Value: Send
+{
+    type Value = Vec<P::Value>;
+
+    fn call<C>(self, runtime: &mut Runtime, next: C) where C: Continuation<Self::Value>, C: Sized {
+        let join_point = Arc::new(MultiJoinPoint {
+            remaining: Mutex::new(self.ps.len()),
+            value: Mutex::new((0..self.ps.len()).map(|_| { None }).collect()),
+            continuation: Mutex::new(Some(next)),
+        });
+
+        for (i, p) in self.ps.into_iter().enumerate() {
+            let join_point = join_point.clone();
+            let c = move |runtime: &mut Runtime, v: P::Value| {
+                let mut ok;
+                {
+                    let mut remaining = join_point.remaining.lock().unwrap();
+                    if *remaining == 1 {
+                        ok = true;
+                    } else {
+                        ok = false;
+                    }
+                    *remaining -= 1;
+                }
+
+                if ok {
+                    let join_point = match Arc::try_unwrap(join_point) {
+                        Ok(val) => val,
+                        _ => panic!("Process join failed."),
+                    };
+
+                    let mut value = join_point.value.into_inner().unwrap();
+                    let continuation = join_point.continuation.into_inner().unwrap().unwrap();
+                    value[i] = Some(v);
+                    continuation.call(runtime, value.into_iter().map(|v| { v.unwrap() }).collect());
+                } else {
+                    (*join_point.value.lock().unwrap())[i] = Some(v);
+                }
+            };
+            p.call(runtime, c);
+        }
+    }
+}
+
+impl<P> ProcessMut for MultiJoin<P>
+    where P: ProcessMut, P::Value: Send {
+    fn call_mut<C>(self, runtime: &mut Runtime, next: C)
+        where Self: Sized, C: Continuation<(Self, Self::Value)> + Sized
+    {
+        let ps_mut: Vec<Mut<P>> = self.ps.into_iter().map(|p| { p.get_mut() }).collect();
+        (MultiJoin { ps: ps_mut }).map(|v: Vec<(P, P::Value)>| {
+            let mut ps = vec!();
+            let mut res = vec!();
+            for (p, value) in v {
+                ps.push(p);
+                res.push(value);
+            }
+            (MultiJoin { ps }, res)
+        }).call(runtime, next);
     }
 }
 

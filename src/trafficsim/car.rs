@@ -2,65 +2,107 @@ extern crate reactivers;
 use reactivers::engine::process::*;
 use reactivers::engine::signal::*;
 
+use super::graph::*;
+use super::road::*;
 use super::network::*;
+
 use std::f32;
 
 use std::sync::Arc;
 
-#[derive(Clone)]
-pub struct Position {
-    pub id: CarId,
-    pub road: EdgeInfo,
-    pub rank: usize,
-    pub direction: EdgeInfo,
-    pub has_moved: bool,
+#[derive(Copy, Clone)]
+pub enum Action {
+    VANISH,
+    CROSS(RoadId),
 }
 
 pub type CarId = usize;
-struct Car {
-    source: NodeId,
+pub struct Car {
+    id: CarId,
+    position: NodeId,
     destination: NodeInfo,
-    position: Position,
+    action: Action,
     path: Vec<EdgeId>,
     d: Weight,
+    graph: Arc<Graph>
 }
 
 pub struct GlobalInfos {
     pub weights: EdgesWeight,
-    pub positions: Vec<Position>,
+    pub moves: Vec<Move>,
 }
 
 impl Car {
-    fn new(id: CarId, source: NodeId, destination: NodeInfo) -> Car {
-        let p = Position { id, road: 0, rank: 0, direction: 0, has_moved: false };
-        Car {source, destination, position: p, path: vec!(), d: f32::MAX }
+    pub fn new(id: CarId, source: NodeId, destination: NodeInfo, graph: Arc<Graph>) -> Car {
+        Car { id,
+            position: source,
+            destination,
+            action: Action::VANISH,
+            path: vec!(),
+            d: f32::MAX,
+            graph
+        }
     }
 
-    fn compute_path(&mut self, network: &Network, weights: &EdgesWeight) {
-        let (path, d) = dijkstra(self.source, |x| {*x == self.destination}, network, weights);
+    fn compute_path(&mut self, weights: &EdgesWeight) {
+        let (path, d) = dijkstra(self.position, |x| {*x == self.destination}, &self.graph, weights);
         self.path = path;
         self.d = d;
-        self.position.direction = self.next_road(network);
+        self.action = Action::CROSS(self.next_road());
     }
 
-    fn next_road(&self, network: &Network) -> EdgeInfo {
-        *network.get_edge(*self.path.last().unwrap()).info()
+    fn next_road(&self) -> EdgeInfo {
+        *self.graph.get_edge(*self.path.last().unwrap()).info()
+    }
+
+    fn compute_action(&mut self, m: &Move, weights: &EdgesWeight) -> Action {
+        match m {
+            &Move::NONE | &Move::STEP(_) => (),
+            &Move::VANISH => (),//println!("Car {} really arrived at destination {}", self.id, self.destination),
+            &Move::CROSS(ref r) => {
+                self.position = r.destination;
+            },
+        }
+
+        if *self.graph.get_node(self.position).info() == self.destination {
+//            println!("Car {} just arrived at destination {}", self.id, self.destination);
+            // TODO: Change destination or choose to die.
+            self.action = Action::VANISH;
+        }
+        else {
+            self.compute_path(weights);
+        }
+
+        self.action.clone()
+    }
+
+    pub fn process(mut self, central_signal: SPMCSignal<Arc<GlobalInfos>>,
+                   pos_signal: MPSCSignal<(CarId, Action), Vec<Action>>,
+                   global_infos: Arc<GlobalInfos>) -> impl Process<Value=()> {
+        let id = self.id;
+//        self.compute_path(&graph, &global_infos.weights);
+//        let v = (id, self.action);
+
+        let mut cont = move |infos: Arc<GlobalInfos>| {
+//            println!("{}", self);
+            (id, self.compute_action(&infos.moves[id], &infos.weights))
+        };
+        let v = cont(global_infos);
+        let p = value(v).emit(&pos_signal).then(
+            central_signal.await_in().map(cont).emit(&pos_signal).loop_inf()
+        );
+        return p;
     }
 }
 
-
-fn car_process(car: Car, central_signal: SPMCSignal<Arc<GlobalInfos>>,
-               pos_signal: MPSCSignal<Position, Vec<Position>>,
-               network: Arc<Network>) -> impl Process<Value=()> {
-    let mut c = car;
-    let cont = move |infos: Arc<GlobalInfos>| {
-        c.position = infos.positions[c.position.id].clone();
-        if c.position.has_moved {
-            c.source = network.get_edge(c.path.pop().unwrap()).destination()
-        }
-        c.compute_path(&network, &infos.weights);
-        c.position.clone()
-    };
-    let p = central_signal.await_in().map(cont).emit(&pos_signal).loop_inf();
-    return p;
+use std::fmt;
+impl fmt::Display for Car {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "Car {} at node {} (crossroad {}), going to crossroad {}.",
+            self.id,
+            self.position,
+            self.graph.get_node(self.position).info(),
+            self.destination
+        )
+    }
 }

@@ -142,7 +142,7 @@ impl Runtime {
                 }
 
                 if !stolen {
-                    thread::sleep_ms(10);
+                    thread::sleep_ms(5);
                 }
             }
 
@@ -223,7 +223,7 @@ pub fn execute_process<P>(process: P) -> P::Value where P:Process, P::Value: Sen
 
     let res = match Arc::try_unwrap(result) {
         Ok(x) => x,
-        _ => panic!("Failed unwrap in execute_process"),
+        _ => panic!("Failed unwrap in execute_process. It may be a Deadlock."),
     };
     res.into_inner().unwrap().unwrap()
 }

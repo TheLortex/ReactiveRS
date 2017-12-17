@@ -1,34 +1,42 @@
-pub mod car;
-pub mod network;
-pub mod road;
-
 extern crate reactivers;
-use reactivers::engine::process::*;
 use reactivers::engine::signal::*;
+use reactivers::engine::process::*;
+use reactivers::engine;
+
+pub mod car;
+pub mod graph;
+pub mod road;
+pub mod network;
+
 use self::network::*;
+use self::graph::*;
 use self::car::*;
 use self::road::*;
 
 use std::sync::Arc;
 
-fn compute_enabled_paths(roads: &mut Vec<Road>, network: Arc<Network>) -> Vec<Vec<RoadId>> {
-    let n = roads.len();
-    (0..n).map(|_| { vec!() }).collect()
-}
+pub fn run_simulation(network: Network, cars: Vec<Car>) {
+    let (central_signal, central_sender) = SPMCSignal::new();
+    let (pos_signal, pos_signal_receiver) =
+        MPSCSignal::new(|(id, action): (CarId, Action), mut v: Vec<Action>| {
+            for _ in (v.len())..(id+1) {
+                v.push(Action::VANISH);
+            }
+            v[id] = action;
+            v
+        });
+    let graph = Arc::new(network.clone_graph().clone());
 
-fn global_process(car_count: usize, central_signal: SPMCSignalSender<Arc<GlobalInfos>>,
-                  pos_signal: MPSCSignalReceiver<Position, Vec<Position>>,
-                  network: Arc<Network>, mut roads: Vec<Road>) -> impl Process<Value=()> {
+    let (mut network_process, global_infos) = network.process(central_sender, pos_signal_receiver);
+    let car_processes = cars.into_iter().map(|c| {
+        c.process(
+            central_signal.clone(),
+            pos_signal.clone(),
+            global_infos.clone()
+        )
+    }).collect();
 
-    let n = network.clone();
-    let cont = move | mut positions: Vec<Position> | {
-        let mut roads = &mut roads;
-        let enabled_paths = compute_enabled_paths(roads, n.clone());
-        let weights = do_step(roads, enabled_paths, &mut positions);
-        let res = Arc::new(GlobalInfos {weights, positions });
-        res
-    };
+    let process = network_process.multi_join(car_processes);
 
-    let p = pos_signal.await_in().map(cont).emit_consume(central_signal).loop_inf();
-    return p;
+    engine::execute_process(process);
 }

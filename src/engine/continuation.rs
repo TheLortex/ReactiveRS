@@ -26,7 +26,7 @@ pub trait Continuation<V>: 'static + Send {
 }
 
 
-impl<V, F> Continuation<V> for F where F: FnOnce(&mut Runtime, V) + 'static + Send{
+impl<V, F> Continuation<V> for F where F: FnOnce(&mut Runtime, V) + 'static + Send {
     fn call(self, runtime: &mut Runtime, value: V)  {
         self(runtime, value);
     }
