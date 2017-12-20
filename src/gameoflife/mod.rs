@@ -71,10 +71,10 @@ pub fn run_simulation(starting_grid: Vec<Vec<bool>>) {
         }
     };
 
-    //let watcher = Watcher::new();
-    //let watcher_process = watcher.process(watcher_signals);
+    let watcher = Watcher::new();
+    let watcher_process = watcher.process(watcher_signals);
 
-    let simulation_process = /*watcher_process.*/multi_join(cell_processes);
+    let simulation_process = watcher_process.multi_join(cell_processes);
 
     // Run the thing
     engine::execute_process(simulation_process);
