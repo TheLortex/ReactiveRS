@@ -6,18 +6,33 @@ use reactivers::engine::process::*;
 use reactivers::engine;
 
 mod cell;
-mod watcher;
+pub mod watcher;
 
 use self::cell::*;
 use self::watcher::*;
 
 use self::itertools::Itertools;
 
-fn is_valid(x: isize, y: isize, n: usize, m: usize) -> bool {
+pub fn is_valid(x: isize, y: isize, n: usize, m: usize) -> bool {
     return x >= 0 && y >= 0 && x < n as isize && y < m as isize;
 }
 
-pub fn run_simulation(starting_grid: Vec<Vec<bool>>) {
+pub fn grid_to_data (starting_grid: &Vec<Vec<bool>>) -> Vec<(bool, usize, usize)>{
+    let mut data_vec = vec!();
+
+    let n = starting_grid.len();
+    let m = starting_grid[0].len();
+
+    for (x, line) in starting_grid.iter().enumerate() {
+        for (y, elem) in line.iter().enumerate() {
+            data_vec.push((*elem, n-1-x, m-1-y));
+        }
+    };
+    data_vec
+}
+
+pub fn run_simulation (starting_grid: Vec<Vec<bool>>, watcher: TerminalWatcher)
+{
     let n = starting_grid.len();
     if n == 0 {
         return;
@@ -71,9 +86,8 @@ pub fn run_simulation(starting_grid: Vec<Vec<bool>>) {
         }
     };
 
-    let watcher = Watcher::new();
-    let watcher_process = watcher.process(watcher_signals);
 
+    let watcher_process = watcher.process(watcher_signals);
     let simulation_process = watcher_process.multi_join(cell_processes);
 
     // Run the thing

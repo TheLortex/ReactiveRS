@@ -6,7 +6,7 @@ use super::signal::*;
 use std::thread;
 
 /// A reactive process.
-pub trait Process: 'static + Send{
+pub trait Process: 'static + Send {
     /// The value created by the process.
     type Value;
 
