@@ -392,14 +392,15 @@ impl<P> Process for MultiJoin<P>
     type Value = Vec<P::Value>;
 
     fn call<C>(self, runtime: &mut Runtime, next: C) where C: Continuation<Self::Value>, C: Sized {
-        let join_point = Arc::new(MultiJoinPoint {
-            remaining: Mutex::new(self.ps.len()),
+        let join_point_original = Arc::new(MultiJoinPoint {
+            remaining: Mutex::new(self.ps.len()+1),
             value: Mutex::new((0..self.ps.len()).map(|_| { None }).collect()),
             continuation: Mutex::new(Some(next)),
         });
 
         for (i, p) in self.ps.into_iter().enumerate() {
-            let join_point = join_point.clone();
+            let join_point = join_point_original.clone();
+            
             let c = move |runtime: &mut Runtime, v: P::Value| {
                 let mut ok;
                 {
@@ -427,6 +428,27 @@ impl<P> Process for MultiJoin<P>
                 }
             };
             p.call(runtime, c);
+        };
+
+        let mut ok;
+        {
+            let mut remaining = join_point_original.remaining.lock().unwrap();
+            if *remaining == 1 {
+                ok = true;
+            } else {
+                ok = false;
+            }
+            *remaining -= 1;
+        }
+        if ok {
+            let join_point_original = match Arc::try_unwrap(join_point_original) {
+                Ok(val) => val,
+                _ => panic! ("Process join failed."),
+            };
+
+            let mut value = join_point_original.value.into_inner().unwrap();
+            let continuation = join_point_original.continuation.into_inner().unwrap().unwrap();
+            continuation.call(runtime, value.into_iter().map(| v | { v.unwrap() }).collect());
         }
     }
 }
