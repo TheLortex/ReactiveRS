@@ -145,7 +145,6 @@ impl EdgesWeight {
 
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
-use std::i32;
 use std::f32;
 
 #[derive(Copy, Clone, PartialEq)]

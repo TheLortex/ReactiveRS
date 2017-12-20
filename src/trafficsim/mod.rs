@@ -9,9 +9,7 @@ pub mod road;
 pub mod network;
 
 use self::network::*;
-use self::graph::*;
 use self::car::*;
-use self::road::*;
 
 use std::sync::Arc;
 

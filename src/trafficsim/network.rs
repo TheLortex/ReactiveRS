@@ -5,7 +5,7 @@ use reactivers::engine::process::*;
 use reactivers::engine::signal::*;
 
 
-use rand::{Rng, thread_rng};
+use rand::{Rng};
 
 use super::graph::*;
 use super::car::*;
