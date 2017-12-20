@@ -43,9 +43,9 @@ pub fn run_simulation(starting_grid: Vec<Vec<bool>>) {
 
             let mut ref_signals: Vec<MCSignal<bool, bool>> = vec!();
 
-            for px in -1..1 {
-                for py in -1..1 {
-                    if is_valid(x as isize + px, y as isize + py, n, m) && (px != 1 || py != 1)   {
+            for px in -1..2 {
+                for py in -1..2 {
+                    if is_valid(x as isize + px, y as isize + py, n, m) && (px != 0 || py != 0)   {
                         let x_as_usize = (x as isize + px) as usize;
                         let y_as_usize = (y as isize + py) as usize;
 

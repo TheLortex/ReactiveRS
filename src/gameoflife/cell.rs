@@ -42,9 +42,9 @@ impl GameCell {
             let alive_neighbor_count = signal_result.iter().fold(0, |tot, value|
                 {
                     if *value {
-                        tot
-                    } else {
                         tot + 1
+                    } else {
+                        tot
                     }
                 });
             self.update(alive_neighbor_count)

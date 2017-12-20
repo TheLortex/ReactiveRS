@@ -42,10 +42,10 @@ pub fn traffic_simulator () {
 
 pub fn game_of_life () {
     let mut starting_grid = vec!();
-    for i in 0..20 {
+    for i in 0..60 {
         let mut line = vec!();
-        for j in 0..20 {
-            line.push((i-10)*(i-10) + (j-10)*(j-10) < 3)
+        for j in 0..30 {
+            line.push((i-10)*(i-10) + (j-10)*(j-10) < 5)
         }
         starting_grid.push(line);
     }
