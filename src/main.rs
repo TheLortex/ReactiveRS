@@ -4,11 +4,12 @@ extern crate reactivers;
 extern crate rand;
 
 mod trafficsim;
+mod gameoflife;
 
 use trafficsim::network::*;
 use trafficsim::car::*;
 
-pub fn main() {
+pub fn traffic_simulator () {
     let mut network = Network::new(3, 3);
     network.add_crossroad(0, 0);
     network.add_crossroad(0, 2);
@@ -37,4 +38,21 @@ pub fn main() {
     println!("{}", network.clone_graph());
 
     trafficsim::run_simulation(network, cars);
+}
+
+pub fn game_of_life () {
+    let mut starting_grid = vec!();
+    for i in 0..2 {
+        let mut line = vec!();
+        for j in 0..2 {
+            line.push((i-40)*(i-40) + (j-40)*(j-40) < 5)
+        }
+        starting_grid.push(line);
+    }
+
+    gameoflife::run_simulation(starting_grid);
+}
+
+pub fn main() {
+    game_of_life();
 }
