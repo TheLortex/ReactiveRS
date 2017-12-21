@@ -251,8 +251,7 @@ fn test_dijkstra() {
     graph.add_edge(3, 0, 6);
     graph.add_edge(3, 4, 7);
 
-    let mut weights = EdgesWeight::new(8);
-    weights.set_weights(vec![10., 1., 2., 1., 3., 1., 7., 2.]);
+    let mut weights = EdgesWeight::new(vec![10., 1., 2., 1., 3., 1., 7., 2.]);
 
     let (_, v) = dijkstra(0, |x| {*x == CrossroadId::new(0, 1) }, &graph, &weights);
     assert_eq!(v, 1.);

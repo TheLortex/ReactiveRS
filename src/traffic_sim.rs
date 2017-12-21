@@ -488,6 +488,10 @@ pub fn main() {
         network.create_car()
     }).collect();
 
+    // With the Gui
     let mut gui = Gui::new(&network, duration);
     gui.run(network, cars);
+
+    // Without the Gui
+//    trafficsim::run_simulation(network, cars, None);
 }

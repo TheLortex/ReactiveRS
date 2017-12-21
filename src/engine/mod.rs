@@ -226,6 +226,10 @@ pub fn execute_process<P>(process: P) -> P::Value where P:Process, P::Value: Sen
 
 #[cfg(test)]
 mod tests {
+    extern crate test;
+    extern crate cpuprofiler;
+    use self::cpuprofiler::PROFILER;
+
     use engine::{Runtime, Continuation};
     use engine::process::{Process, value, LoopStatus, ProcessMut};
     use engine::signal::{Signal, SEmit, PureSignal};
@@ -233,6 +237,7 @@ mod tests {
     use engine;
 
     use std::sync::{Arc, Mutex};
+    use self::test::Bencher;
 //    #[test]
 //    fn test_42() {
 //        println!("==> test_42");
@@ -429,7 +434,7 @@ mod tests {
     #[test]
     #[ignore]
     fn test_while_perf() {
-        let mut x = 100000;
+        let mut x = 1000;
         let c = move |_| {
             x -= 1;
             if x == 0 {
@@ -440,6 +445,23 @@ mod tests {
         };
         let p = process::Value::new(()).map(c);
         assert_eq!(42, engine::execute_process(p.pause().loop_while()));
+    }
+
+    #[bench]
+    fn bench_while_perf(b: &mut Bencher) {
+        b.iter(|| test_while_perf());
+    }
+
+    #[test]
+    #[ignore]
+    fn profile_while_perf() {
+        PROFILER.lock().unwrap().start("./my-prof.profile").unwrap();
+
+        for _ in 0..100 {
+            test_while_perf();
+        }
+
+        PROFILER.lock().unwrap().stop().unwrap();
     }
 
     #[test]
