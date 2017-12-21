@@ -110,12 +110,12 @@ pub fn run_simulation (starting_grid: Vec<Vec<bool>>, watcher: TerminalWatcher)
     let perf_process = value(()).map(incr_counter).pause().loop_inf();
 
     let watcher_process = watcher.process(watcher_signals);
-    let simulation_process = multi_join(cell_processes);
+    let simulation_process = watcher_process.multi_join(cell_processes);
 
     println!("Simulating");
 
     // Run the thing
-    PROFILER.lock().unwrap().start("./profile").unwrap();
+    //PROFILER.lock().unwrap().start("./profile").unwrap();
     engine::execute_process(simulation_process, 8, 1000);
-    PROFILER.lock().unwrap().stop().unwrap();
+    //PROFILER.lock().unwrap().stop().unwrap();
 }

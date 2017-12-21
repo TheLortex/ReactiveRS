@@ -113,11 +113,11 @@ use std::fmt;
 impl fmt::Display for Graph {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         for node in &self.nodes {
-            write!(f, "Node {}:", node.id());
+            let _ = write!(f, "Node {}:", node.id());
             for &edge_id in node.edges() {
-                write!(f, " {}", self.get_edge(edge_id).destination());
+                let _ = write!(f, " {}", self.get_edge(edge_id).destination());
             }
-            write!(f, "\n");
+            let _ = write!(f, "\n");
         }
         write!(f, "")
     }
@@ -226,9 +226,9 @@ pub fn dijkstra<F>(source: NodeId, f: F, graph: &Graph, weights: &EdgesWeight) -
 //    path.reverse();
     if path.is_empty() {
         if f(graph.get_node(source).info()) {
-//            println!("The source is a wanted destination.");
+            println!("The source is a wanted destination.");
         }
-//        println!("The path from {} to crossroad ?? is empty.", source);
+        println!("The path from {} to crossroad ?? is empty.", source);
     }
     return (path, cost);
 }

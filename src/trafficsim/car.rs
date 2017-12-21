@@ -13,8 +13,11 @@ use std::sync::Arc;
 #[derive(Copy, Clone)]
 pub enum Action {
     VANISH,
+    SPAWN,
     CROSS(RoadId),
 }
+
+pub type Speed = usize;
 
 pub type CarId = usize;
 pub struct Car {
@@ -24,7 +27,8 @@ pub struct Car {
     action: Action,
     path: Vec<EdgeId>,
     d: Weight,
-    graph: Arc<Graph>
+    graph: Arc<Graph>,
+    speed: usize,
 }
 
 pub struct GlobalInfos {
@@ -40,7 +44,8 @@ impl Car {
             action: Action::VANISH,
             path: vec!(),
             d: f32::MAX,
-            graph
+            graph,
+            speed: 0,
         }
     }
 
@@ -48,20 +53,38 @@ impl Car {
         let (path, d) = dijkstra(self.position, |x| {*x == self.destination}, &self.graph, weights);
         self.path = path;
         self.d = d;
-        self.action = Action::CROSS(self.next_road());
+
+        if self.path.is_empty() {
+            println!("Car {} has tp disappear, no solution.", self.id);
+            self.action = Action::VANISH;
+        }
+        else {
+            self.action = Action::CROSS(self.next_road());
+        }
     }
 
     fn next_road(&self) -> EdgeInfo {
         *self.graph.get_edge(*self.path.last().unwrap()).info()
     }
 
-    fn compute_action(&mut self, m: &Move, weights: &EdgesWeight) -> Action {
+    fn compute_action(&mut self, m: &Move, weights: &EdgesWeight) -> (Action, Speed) {
         match m {
-            &Move::NONE | &Move::STEP(_) => (),
-            &Move::VANISH => (),//println!("Car {} really arrived at destination {}", self.id, self.destination),
-            &Move::CROSS(ref r) => {
+            &Move::NONE => self.speed = 0,
+            &Move::STEP(i) => self.speed = i as usize,
+            &Move::VANISH => {
+                self.speed = 0;
+                self.action = Action::SPAWN;
+                return (self.action, 0);
+            },//println!("Car {} really arrived at destination {}", self.id, self.destination),
+            &Move::CROSS(r) => {
                 self.position = r.destination;
+                self.speed = 0;
             },
+            &Move::SPAWN(r, _, dest) => {
+                self.destination = dest;
+                self.position = r.destination;
+                self.speed = 0;
+            }
         }
 
         if *self.graph.get_node(self.position).info() == self.destination {
@@ -73,21 +96,20 @@ impl Car {
             self.compute_path(weights);
         }
 
-        self.action.clone()
+        (self.action, self.speed)
     }
 
     pub fn process(mut self, central_signal: SPMCSignal<Arc<GlobalInfos>>,
-                   pos_signal: MPSCSignal<(CarId, Action), Vec<Action>>,
-                   global_infos: Arc<GlobalInfos>) -> impl Process<Value=()> {
+                   pos_signal: MPSCSignal<(CarId, (Action, Speed)), (Vec<Action>, Vec<Speed>)>) -> impl Process<Value=()>
+    {
         let id = self.id;
-//        self.compute_path(&graph, &global_infos.weights);
-//        let v = (id, self.action);
 
-        let mut cont = move |infos: Arc<GlobalInfos>| {
+        let cont = move |infos: Arc<GlobalInfos>| {
 //            println!("{}", self);
             (id, self.compute_action(&infos.moves[id], &infos.weights))
         };
-        let v = cont(global_infos);
+
+        let v = (id, (Action::SPAWN, 0));
         let p = value(v).emit(&pos_signal).then(
             central_signal.await_in().map(cont).emit(&pos_signal).loop_inf()
         );
