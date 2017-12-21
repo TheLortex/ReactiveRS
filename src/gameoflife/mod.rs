@@ -1,5 +1,6 @@
 extern crate reactivers;
 extern crate itertools;
+extern crate cpuprofiler;
 
 use reactivers::engine::signal::*;
 use reactivers::engine::process::*;
@@ -10,8 +11,10 @@ pub mod watcher;
 
 use self::cell::*;
 use self::watcher::*;
-
+use self::cpuprofiler::PROFILER;
 use self::itertools::Itertools;
+
+use std::time;
 
 pub fn is_valid(x: isize, y: isize, n: usize, m: usize) -> bool {
     return x >= 0 && y >= 0 && x < n as isize && y < m as isize;
@@ -87,9 +90,32 @@ pub fn run_simulation (starting_grid: Vec<Vec<bool>>, watcher: TerminalWatcher)
     };
 
 
+    let mut counter = 0;
+    let mut last_time = time::Instant::now();
+
+    let incr_counter = move |()| {
+        if counter == 0 {
+            last_time = time::Instant::now();
+        }
+
+        counter += 1;
+        if counter == 1000 {
+            counter = 0;
+
+            println!("Elapsed: {}", last_time.elapsed().as_secs());
+            last_time = time::Instant::now();
+        }
+    };
+
+    let perf_process = value(()).map(incr_counter).pause().loop_inf();
+
     let watcher_process = watcher.process(watcher_signals);
     let simulation_process = watcher_process.multi_join(cell_processes);
 
+    println!("Simulating");
+
     // Run the thing
-    engine::execute_process(simulation_process);
+    //PROFILER.lock().unwrap().start("./profile").unwrap();
+    engine::execute_process(simulation_process, 8, 1000);
+    //PROFILER.lock().unwrap().stop().unwrap();
 }

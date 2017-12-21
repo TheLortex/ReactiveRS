@@ -61,5 +61,5 @@ pub fn run_simulation(network: Network, cars: Vec<Car>, data: Option<(f64,Arc<Mu
     let q2 = value(());
     let gui_p = value(gui_bool).then_else(q1, q2);
 
-    engine::execute_process(gui_p.join(process));
+    engine::execute_process(gui_p.join(process), 8, -1);
 }

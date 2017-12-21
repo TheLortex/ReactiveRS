@@ -50,6 +50,7 @@ pub fn game_of_life () {
     let between = rand::distributions::Range::new(0f64, 1f64);
 
     let mut c = ncurses::wgetch(win);
+
     while c != 10 {
 
         if c == ncurses::KEY_MOUSE {

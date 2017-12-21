@@ -59,7 +59,7 @@ impl ParallelRuntime {
         r
     }
 
-    pub fn execute(&mut self, job: Box<Continuation<()>>) {
+    pub fn execute(&mut self, job: Box<Continuation<()>>, max_iters: i32) {
         self.runtimes[0].on_current_instant(job);
 
         let mut join_handles = vec!();
@@ -71,7 +71,7 @@ impl ParallelRuntime {
 
             let worker_continuation = move || {
                 // Thread main loop.
-                runtime.work();
+                runtime.work(max_iters);
                 runtime
             };
             let handle = b.spawn(worker_continuation).unwrap();
@@ -106,9 +106,15 @@ impl Runtime {
         }
     }
 
-    pub fn work(&mut self) {
+    pub fn work(&mut self, max_iter: i32) {
+        let mut n_iter = 0;
+
         loop {
-//            println!("iter");
+            n_iter += 1;
+            if max_iter != -1 && n_iter > max_iter {
+                break;
+            }
+
             // Step 1.
 
             /// Do all the local work.
@@ -178,7 +184,6 @@ impl Runtime {
             }
 
         };
-        println!("j'me tire");
     }
 
     /// Registers a continuation to execute on the current instant.
@@ -201,12 +206,12 @@ impl Runtime {
 use std::cell::Cell;
 use std::sync::{Mutex};
 
-pub fn execute_process<P>(process: P) -> P::Value where P:Process, P::Value: Send {
+pub fn execute_process<P>(process: P, n_workers: usize, max_iters: i32) -> P::Value where P:Process, P::Value: Send {
     // let mut r = Runtime::new(1);
     let result: Arc<Mutex<Option<P::Value>>> = Arc::new(Mutex::new(None));
     let result2 = result.clone();
 
-    let mut r = ParallelRuntime::new(4);
+    let mut r = ParallelRuntime::new(n_workers);
 
     let todo = Box::new(move |mut runtime: &mut Runtime, ()| {
         process.call(&mut runtime, move|runtime: &mut Runtime, value: P::Value| {
@@ -214,7 +219,7 @@ pub fn execute_process<P>(process: P) -> P::Value where P:Process, P::Value: Sen
         });
     });
 
-    r.execute(todo);
+    r.execute(todo, max_iters);
 
     let res = match Arc::try_unwrap(result) {
         Ok(x) => x,

@@ -482,7 +482,7 @@ pub fn main() {
     network.simplify();
     println!("{}", network);
 
-    let (duration, car_count) = (1., 1);
+    let (duration, car_count) = (1., 1000);
 
     let cars: Vec<Car> = (0..car_count).map(|_| {
         network.create_car()
