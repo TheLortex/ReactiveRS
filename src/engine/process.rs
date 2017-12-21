@@ -3,9 +3,10 @@ use super::continuation::Continuation;
 use std::cell::Cell;
 use std::sync::{Arc, Mutex};
 use super::signal::*;
+use std::thread;
 
 /// A reactive process.
-pub trait Process: 'static + Send{
+pub trait Process: 'static + Send {
     /// The value created by the process.
     type Value;
 
@@ -392,14 +393,15 @@ impl<P> Process for MultiJoin<P>
     type Value = Vec<P::Value>;
 
     fn call<C>(self, runtime: &mut Runtime, next: C) where C: Continuation<Self::Value>, C: Sized {
-        let join_point = Arc::new(MultiJoinPoint {
-            remaining: Mutex::new(self.ps.len()),
+        let join_point_original = Arc::new(MultiJoinPoint {
+            remaining: Mutex::new(self.ps.len()+1),
             value: Mutex::new((0..self.ps.len()).map(|_| { None }).collect()),
             continuation: Mutex::new(Some(next)),
         });
 
         for (i, p) in self.ps.into_iter().enumerate() {
-            let join_point = join_point.clone();
+            let join_point = join_point_original.clone();
+           // println!("Creating: {}", Arc::strong_count(&join_point));
             let c = move |runtime: &mut Runtime, v: P::Value| {
                 let mut ok;
                 {
@@ -410,9 +412,18 @@ impl<P> Process for MultiJoin<P>
                         ok = false;
                     }
                     *remaining -= 1;
+
+                    if !ok { // Free the reference as soon as possible.
+                        (*join_point.value.lock().unwrap())[i] = Some(v);
+                        return;
+                    }
                 }
 
                 if ok {
+                    // Wait for remaining references to be freed.
+                    while Arc::strong_count(&join_point) > 1 {
+                        thread::sleep_ms(10);
+                    }
                     let join_point = match Arc::try_unwrap(join_point) {
                         Ok(val) => val,
                         _ => panic!("Process join failed."),
@@ -422,11 +433,32 @@ impl<P> Process for MultiJoin<P>
                     let continuation = join_point.continuation.into_inner().unwrap().unwrap();
                     value[i] = Some(v);
                     continuation.call(runtime, value.into_iter().map(|v| { v.unwrap() }).collect());
-                } else {
-                    (*join_point.value.lock().unwrap())[i] = Some(v);
                 }
             };
             p.call(runtime, c);
+           // println!("After call: {}", Arc::strong_count(&join_point_original));
+        };
+
+        let mut ok;
+        {
+            let mut remaining = join_point_original.remaining.lock().unwrap();
+            if *remaining == 1 {
+                ok = true;
+            } else {
+                ok = false;
+            }
+            *remaining -= 1;
+        }
+        if ok {
+            println!("Joining end: {}", Arc::strong_count(&join_point_original));
+            let join_point_original = match Arc::try_unwrap(join_point_original) {
+                Ok(val) => val,
+                _ => panic! ("Process join failed."),
+            };
+
+            let mut value = join_point_original.value.into_inner().unwrap();
+            let continuation = join_point_original.continuation.into_inner().unwrap().unwrap();
+            continuation.call(runtime, value.into_iter().map(| v | { v.unwrap() }).collect());
         }
     }
 }
