@@ -36,5 +36,5 @@ pub fn run_simulation(network: Network, cars: Vec<Car>) {
 
     let process = network_process.multi_join(car_processes);
 
-    engine::execute_process(process);
+    engine::execute_process(process, 8, -1);
 }
