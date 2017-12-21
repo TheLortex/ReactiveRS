@@ -7,6 +7,11 @@ authors = ["martin"]
 coco = "0.3.3"
 itertools = "0.6.1"
 rand="0.3"
+piston2d-graphics="0.24.0"
+piston2d-opengl_graphics="0.50.0"
+piston="0.35.0"
+pistoncore-sdl2_window = "0.47.0"
+sdl2 = "0.31.0"
 
 [lib]
 name = "reactivers"
@@ -14,4 +19,4 @@ path = "src/lib.rs"
 
 [[bin]]
 name = "trafficsim"
-path = "src/main.rs"
+path = "src/traffic_sim.rs"

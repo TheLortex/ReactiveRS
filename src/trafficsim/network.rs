@@ -5,13 +5,12 @@ use reactivers::engine::process::*;
 use reactivers::engine::signal::*;
 
 
-use rand::{Rng, thread_rng};
+use rand::Rng;
 
 use super::graph::*;
 use super::car::*;
 use super::road::*;
 
-use std::thread;
 use std::sync::Arc;
 
 const NORTH:    usize = 0;
@@ -26,6 +25,7 @@ const RIGHT:    usize = 1;
 #[derive(Copy, Clone)]
 pub enum Move {
     NONE,
+    SPAWN(RoadInfo, usize, CrossroadId),
     STEP(i32),
     VANISH,
     CROSS(RoadInfo),
@@ -33,11 +33,13 @@ pub enum Move {
 
 #[derive(Clone)]
 pub struct Network {
-    width: usize,
-    height: usize,
-    car_count: usize,
+    pub width: usize,
+    pub height: usize,
+    pub car_count: usize,
+    pub cars_per_unit: i32,
+    pub cars_per_crossroad: i32,
     grid: Vec<Vec<Option<CrossRoad>>>,
-    roads: Vec<Road>,
+    pub roads: Vec<Road>,
     graph: Graph,
     car_graph: Option<Arc<Graph>>,
     pub crossroads: Vec<CrossroadId>,
@@ -45,8 +47,8 @@ pub struct Network {
 
 #[derive(Copy, Clone, Eq, PartialEq)]
 pub struct CrossroadId {
-    x: usize,
-    y: usize,
+    pub x: usize,
+    pub y: usize,
 }
 
 use std::ops::{ Index, IndexMut };
@@ -113,6 +115,7 @@ pub struct CrossRoad {
     id: CrossroadId,
     pub nodes: Vec<NodeId>,
     roads: Vec<Vec<Option<RoadId>>>,
+    roads_arriving: Vec<Vec<Option<RoadId>>>,
 }
 
 impl CrossRoad {
@@ -122,38 +125,82 @@ impl CrossRoad {
             id,
             nodes: vec!(),
             roads: none_array(4, 2),
+            roads_arriving: none_array(4, 2),
         };
 
-        for i in 0..4 {
+        for _ in 0..4 {
             c.nodes.push(g.add_node(c.id));
         }
         c
     }
 
     fn enable_path(&self, roads: &mut Vec<Road>) {
-        let mut max = -1;
-        let mut r_max = 0;
-        for r in self.existing_roads() {
-            if roads[r].get_car_count() > max {
-                r_max = r;
-                max = roads[r].get_car_count();
-            }
-        }
+        // First policy: we enable the most loaded road with some guy waiting.
+//        let mut max = -1;
+//        let mut r_max = 0;
+//        for r in self.existing_roads_arriving() {
+//            if roads[r].is_waiting() && roads[r].get_car_count() > max {
+//                r_max = r;
+//                max = roads[r].get_car_count();
+//            }
+//        }
+//
+//        roads[r_max].enable();
 
-        roads[r_max].enable();
-    }
+        // Second policy: we enable the most loaded roads with guys waiting, but in pairs.
+        let mut max_pair = ((NORTH, LEFT), (NORTH, LEFT));
+        let mut max_load = 0;
 
-    fn existing_roads(&self) -> Vec<RoadId> {
-        let mut res = vec!();
-        for d in &self.roads {
-            for r in d {
-                if r.is_some() {
-                    res.push(r.unwrap());
+        for d in 0..4 {
+            for s in 0..2 {
+                for x in 0..2 {
+                    let (d2, s2) = {
+                        if x == 0 {
+                            (d, 1 - s)
+                        }
+                        else {
+                            ((d + 2) % 4, s)
+                        }
+                    };
+                    let load = self.compute_load(d, s, roads) +
+                        self.compute_load(d2, s2, roads);
+
+                    if load > max_load {
+                        max_load = load;
+                        max_pair = ((d, s), (d2, s2));
+                    }
                 }
             }
         }
-        res
+
+        let ((d1, s1), (d2, s2)) = max_pair;
+        if self.roads_arriving[d1][s1].is_some() {
+            roads[self.roads_arriving[d1][s1].unwrap()].enable();
+        }
+        if self.roads_arriving[d2][s2].is_some() {
+            roads[self.roads_arriving[d2][s2].unwrap()].enable();
+        }
     }
+
+    fn compute_load(&self, direction: usize, side: usize, roads: &mut Vec<Road>) -> i32 {
+        let r = self.roads_arriving[direction][side];
+        if r.is_none() || !roads[r.unwrap()].is_waiting() {
+            return 0;
+        }
+        return roads[r.unwrap()].get_car_count();
+    }
+
+//    fn existing_roads_arriving(&self) -> Vec<RoadId> {
+//        let mut res = vec!();
+//        for d in &self.roads_arriving {
+//            for r in d {
+//                if r.is_some() {
+//                    res.push(r.unwrap());
+//                }
+//            }
+//        }
+//        res
+//    }
 }
 
 
@@ -163,7 +210,9 @@ impl Network {
             width,
             height,
             car_count: 0,
-            grid: none_array(width, height),
+            cars_per_unit: 10,
+            cars_per_crossroad: 4,
+            grid: none_array(height, width),
             roads: vec!(),
             graph: Graph::new(),
             car_graph: None,
@@ -180,6 +229,7 @@ impl Network {
 
     pub fn new_road(&mut self, src: CrossroadId, dest: CrossroadId, side: Side) -> RoadId {
         let (dx, dy, length) = src.join(dest);
+        let length = length * self.cars_per_unit - self.cars_per_crossroad;
         let (d1, d2) = compute_directions(dx, dy, side);
         let id = self.roads.len();
 
@@ -190,11 +240,13 @@ impl Network {
             end: dest,
             side,
             destination: self.crossroad(dest).nodes[d2],
+            length: length as usize,
         };
 
         let road = Road::new(road_info, length);
         self.roads.push(road);
         self.crossroad_mut(src).roads[d1][side] = Some(id);
+        self.crossroad_mut(dest).roads_arriving[d1][side] = Some(id);
 
         // Then, it builds the two corresponding edges in the graph.
         let (n1, n2) = {
@@ -261,24 +313,37 @@ impl Network {
         let id = self.car_count;
         self.car_count += 1;
 
+        Car::new(id, 0, CrossroadId::new(0, 0), self.car_graph.clone().unwrap())
+    }
+
+    pub fn generate_request(&mut self, id: CarId) -> (RoadInfo, usize, CrossroadId) {
         let mut rng = rand::thread_rng();
         let mut road_id = rng.gen_range(0, self.roads.len());
 
-        while !self.roads[road_id].spawn_car(id) {
+        let mut pos = self.roads[road_id].spawn_car(id);
+        while pos == -1 {
             road_id = rng.gen_range(0, self.roads.len());
+            pos = self.roads[road_id].spawn_car(id);
         }
 
-        let (source_c, source_node) = {
-            let info = self.roads[road_id].info();
-            (info.end, info.destination)
-        };
+        let road_info = self.roads[road_id].info();
+        let source_c = road_info.end;
 
         let mut destination = self.random_crossroad();
         while destination == source_c {
             destination = self.random_crossroad();
         }
 
-        Car::new(id, source_node, destination, self.car_graph.clone().unwrap())
+        (road_info, pos as usize, destination)
+    }
+
+    pub fn spawn_cars(&mut self, actions: Vec<Action>, moves: &mut Vec<Move>) {
+        for (i, a) in actions.iter().enumerate() {
+            if let Action::SPAWN = *a {
+                let (road_info, pos, destination) = self.generate_request(i);
+                moves[i] = Move::SPAWN(road_info, pos, destination);
+            }
+        }
     }
 
     pub fn enable_paths(&mut self) {
@@ -287,10 +352,10 @@ impl Network {
         }
     }
 
-    pub fn roads_step(&mut self, actions: &mut Vec<Action>, moves: &mut Vec<Move>)
+    pub fn roads_step(&mut self, actions: &mut Vec<Action>, moves: &mut Vec<Move>, speeds: &Vec<Speed>)
                    -> EdgesWeight
     {
-        let mut roads = &mut self.roads;
+        let roads = &mut self.roads;
 
         // All the possibles enabled paths are tried.
         for i in 0..roads.len() {
@@ -300,36 +365,34 @@ impl Network {
         // We make a step for all remaining cars.
         let mut weights = vec!();
         for i in 0..roads.len() {
-            weights.push(roads[i].step_forward(moves));
+            weights.push(roads[i].step_forward(moves, speeds));
         }
-        let mut edges_weight = EdgesWeight::new(weights);
+        let edges_weight = EdgesWeight::new(weights);
 
         return edges_weight
     }
 
     pub fn process(mut self, central_signal: SPMCSignalSender<Arc<GlobalInfos>>,
-                      pos_signal: MPSCSignalReceiver<(CarId, Action), Vec<Action>>)
-        -> (impl Process<Value=()>, Arc<GlobalInfos>) {
+                      pos_signal: MPSCSignalReceiver<(CarId, (Action, Speed)), (Vec<Action>, Vec<Speed>)>)
+        -> impl Process<Value=()> {
 
-        let mut moves = (0..self.car_count).map(|_| { Move::NONE }).collect();
         let mut weights = vec!();
         for r in &self.roads {
             weights.push(r.weight());
         }
-        let global_infos = GlobalInfos {
-            weights: EdgesWeight::new(weights),
-            moves,
-        };
+
         let mut step = 0;
         let mut mean_moves = self.car_count as f32;
         let beta = 0.99;
 
-        let cont = move | mut actions: Vec<Action> | {
+        let cont = move | (mut actions, speeds): (Vec<Action>, Vec<Speed>) | {
             step += 1;
-            let enabled_paths = self.enable_paths();
+            self.enable_paths();
 
             let mut moves = (0..actions.len()).map(|_| { Move::NONE }).collect();
-            let weights = self.roads_step(&mut actions, &mut moves);
+            let weights = self.roads_step(&mut actions, &mut moves, &speeds);
+
+            self.spawn_cars(actions, &mut moves);
 
             let nb_moves: i32 = moves.iter().map(| m | { match m {
                 &Move::NONE => 0,
@@ -338,24 +401,19 @@ impl Network {
             mean_moves = beta * mean_moves + (1. - beta) * (nb_moves as f32);
             let res = Arc::new(GlobalInfos { weights, moves });
 
-            println!("Step {}:\n{}", step, self);
-//            println!("{:?}", res.weights.weights);
-//            println!("{} moves, mean {}.", nb_moves, mean_moves);
-
             if mean_moves < 1e-3 {
                 panic!("It looks like a stationary state: not enough moves.");
             }
-            thread::sleep_ms(500);
             res
         };
 
         let p = pos_signal.await_in().map(cont).emit_consume(central_signal).loop_inf();
-        return (p, Arc::new(global_infos));
+        return p;
     }
 
-    pub fn to_string(&self) -> String {
+    pub fn to_string(&self, cars: bool) -> String {
         let (width, height) = (2 * self.width - 1, 2 * self.height - 1);
-        let mut char_map: Vec<Vec<char>> = (0..width).map(|_| { (0..height).map(|_| { ' ' }).collect()}).collect();
+        let mut char_map: Vec<Vec<char>> = (0..height).map(|_| { (0..width).map(|_| { ' ' }).collect()}).collect();
         for c in &self.crossroads {
             char_map[2 * c.y][2 * c.x] = 'C';
         }
@@ -364,7 +422,7 @@ impl Network {
             let (dx, dy, length) = start.join(r.info().end);
             let c = if dx == 0 { '|' } else { '-' };
             let (x, y) = (2*start.x, 2*start.y);
-            {
+            if cars {
                 let mut car_count = r.get_car_count();
                 let k = 2*length - 1;
                 let ref_char = &mut char_map[(y as i32 + k * dy) as usize][(x as i32 + k * dx) as usize];
@@ -376,7 +434,7 @@ impl Network {
                 *ref_char = car_count.to_string().pop().unwrap();
             }
 
-            for k in 1..(2*length-1) {
+            for k in 1..(2*length) {
                 let ref_c = &mut char_map[(y as i32 + k * dy) as usize][(x as i32 + k * dx) as usize];
                 if *ref_c == ' ' {
                     *ref_c = c;
@@ -384,7 +442,102 @@ impl Network {
             }
         }
 
-        char_map.into_iter().rev().map(|line| { line.into_iter().collect::<String>().add("\n") }).collect()
+        char_map.into_iter().map(|line| { line.into_iter().collect::<String>().add("\n") }).collect()
+    }
+
+    pub fn load_file(&mut self, filename: &str) {
+        use std::fs::File;
+        use std::io::prelude::*;
+
+        let mut f = File::open(format!("./src/trafficsim/maps/{}", filename)).expect("file not found");
+
+        let mut contents = String::new();
+        f.read_to_string(&mut contents)
+            .expect("something went wrong reading the file");
+
+        self.load_string(&contents);
+    }
+
+    pub fn load_string(&mut self, s: &str) {
+        let s = s.trim_right();
+        let mut char_map: Vec<Vec<char>> = s.split("\n").map(| line | { line.trim_right().chars().collect() }).collect();
+        let width = char_map.iter().map(| line | { line.len() }).max().unwrap();
+        let height = char_map.len();
+        for line in char_map.iter_mut() {
+            for _ in 0..(width - line.len()) {
+                line.push(' ');
+            }
+        }
+
+        *self = Network::new((width + 1) / 2, (height + 1) / 2);
+
+        // First, we add all the crossroads.
+        for (j, line) in char_map.iter().enumerate() {
+            for (i, c) in line.iter().enumerate() {
+                if *c == 'C' {
+                    self.add_crossroad(i / 2, j / 2);
+                }
+            }
+        }
+
+        // Then we add the horizontal roads.
+        for (j, line) in char_map.iter().enumerate() {
+            let mut last_crossroad = None;
+            let mut road_length = 0;
+            for (i, c) in line.iter().enumerate() {
+                if *c == 'C' {
+                    if last_crossroad.is_some() && road_length > 0 {
+                        self.add_all_roads(last_crossroad.unwrap(), (i / 2, j / 2));
+                    }
+                    last_crossroad = Some((i / 2, j / 2));
+                    road_length = 0;
+                }
+                else if *c == '-' {
+                    if last_crossroad.is_none() {
+                        panic!("Invalid road at position ({}, {}): no crossroad to join.", i, j);
+                    }
+                    else {
+                        road_length += 1;
+                    }
+                }
+                else {
+                    if road_length > 0 {
+                        panic!("Invalid road at position ({}, {}): no crossroad to join.", i, j);
+                    }
+                    last_crossroad = None;
+                }
+            }
+        }
+
+        // Then we add the vertical roads.
+        for i in 0..width {
+            let mut last_crossroad = None;
+            let mut road_length = 0;
+            for j in 0..height {
+                let c = char_map[j][i];
+                if c == 'C' {
+                    if last_crossroad.is_some() && road_length > 0 {
+                        self.add_all_roads(last_crossroad.unwrap(), (i / 2, j / 2));
+                    }
+                    last_crossroad = Some((i / 2, j / 2));
+                    road_length = 0;
+                }
+                    else if c == '|' {
+                        if last_crossroad.is_none() {
+                            panic!("Invalid road at position ({}, {}): no crossroad to join.", i, j);
+                        }
+                            else {
+                                road_length += 1;
+                            }
+                    }
+                        else {
+                            if road_length > 0 {
+                                panic!("Invalid road at position ({}, {}): no crossroad to join.", i, j);
+                            }
+                            last_crossroad = None;
+                        }
+            }
+        }
     }
 
     pub fn clone_graph(&self) -> Graph {
@@ -436,7 +589,7 @@ impl Network {
 
 impl fmt::Display for Network {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}", self.to_string())
+        write!(f, "{}", self.to_string(false))
     }
 }
 
@@ -447,14 +600,14 @@ pub fn none_array<T>(width: usize, height: usize) -> Vec<Vec<Option<T>>> {
 /// Computes the road direction and its node direction.
 pub fn compute_directions(dx: i32, dy: i32, side: Side) -> (usize, usize) {
     let d1 = match (dx, dy) {
-        (1, 0)  => NORTH,
-        (0, 1)  => EAST,
-        (-1, 0) => SOUTH,
-        (0, -1) => WEST,
+        (1, 0)  => EAST,
+        (0, 1)  => SOUTH,
+        (-1, 0) => WEST,
+        (0, -1) => NORTH,
         _       => panic!("Invalid direction."),
     };
 
-    let d2 = (d1 + side * 2) % 4;
+    let d2 = (d1 + (1-side) * 2) % 4;
     (d1, d2)
 }
 

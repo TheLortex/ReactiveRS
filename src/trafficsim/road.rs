@@ -11,6 +11,7 @@ pub struct RoadInfo {
     pub end: CrossroadId,
     pub side: Side,
     pub destination: NodeId,
+    pub length: usize,
 }
 
 #[derive(Clone)]
@@ -80,15 +81,15 @@ impl Road {
         self.has_moved = true;
     }
 
-    pub fn spawn_car(&mut self, id: CarId) -> bool {
-        for place in &mut self.queue {
+    pub fn spawn_car(&mut self, id: CarId) -> i32 {
+        for (i, place) in self.queue.iter_mut().enumerate() {
             if place.is_none() {
                 *place = Some(id);
                 self.car_count += 1;
-                return true;
+                return i as i32;
             }
         }
-        return false;
+        return -1;
     }
 
     pub fn update_status(&mut self) {
@@ -102,24 +103,59 @@ impl Road {
         compute_weight(self.average_flow, self.length, self.car_count)
     }
 
-    pub fn step_forward(&mut self, moves: &mut Vec<Move>) -> Weight {
-        for i in 1..self.last_index {
-            if self.queue[i].is_some() && self.queue[i-1].is_none() {
-                self.queue[i - 1] = self.queue[i];
-                self.queue[i] = None;
-                moves[self.queue[i - 1].unwrap()] = Move::STEP(1);
-            }
+    pub fn step_forward(&mut self, moves: &mut Vec<Move>, speeds: &Vec<Speed>) -> Weight {
+        // The speed can increase at most by speed_increase per cycle.
+        let speed_increase = 3;
+
+        // The speed cannot decrease more than speed_decrease per cycle.
+        let speed_decrease = 2;
+
+        let mut free_space= 0;
+        let mut last_speed = 0;
+        if self.queue[0].is_none() {
+            free_space += 1;
+            last_speed = 1;
         }
-        if !self.new_guy && self.queue[self.last_index].is_some() && self.queue[self.last_index-1].is_none() {
-            let i = self.last_index;
-            self.queue[i-1] = self.queue[i];
-            moves[self.queue[i - 1].unwrap()] = Move::STEP(1);
-            self.queue[i] = None;
+        for i in 1..(self.last_index+1) {
+            if self.queue[i].is_some() {
+                if last_speed > 0 {
+                    if (i == self.last_index) && self.new_guy {
+                        // The car was just added to the end of the queue.
+                        break;
+                    }
+                    let id = self.queue[i].unwrap();
+                    // We compute the length of the step.
+
+                    let step = last_speed.min(speeds[id] + speed_increase);
+
+                    if self.queue[i - step].is_some() {
+                        panic!("Just overwrote some car!");
+                    }
+                    self.queue[i - step] = self.queue[i];
+                    self.queue[i] = None;
+                    moves[id] = Move::STEP(step as i32);
+                    free_space = 0;
+                }
+                else {
+                    free_space = 0;
+                }
+            }
+            else {
+                free_space += 1;
+                if free_space >= last_speed / speed_decrease + 1 {
+                    free_space = 0;
+                    last_speed += 1;
+                }
+            }
         }
 
         self.update_status();
 
         self.weight()
+    }
+
+    pub fn is_waiting(&self) -> bool {
+        self.queue[0].is_some()
     }
 
     pub fn deliver(i: RoadId, actions: &mut Vec<Action>, moves: &mut Vec<Move>, roads: &mut Vec<Road>) {
@@ -142,12 +178,15 @@ impl Road {
                     moves[car] = Move::CROSS(roads[j].info.clone());
                 }
             },
+            Action::SPAWN => {
+                panic!("A car on a road cannot be teleported.");
+            }
         }
     }
 }
 
 pub fn update_flow(average_flow: f32, has_moved: bool) -> f32 {
-    let alpha = 0.95;
+    let alpha = 0.5;
     let new = if has_moved { 1. } else { 0. };
     let new_value = alpha * average_flow + (1. - alpha) * new;
 
@@ -155,7 +194,7 @@ pub fn update_flow(average_flow: f32, has_moved: bool) -> f32 {
 //        println!("OVERFLOW");
     }
 
-    f32::max(new_value, 1e-10)
+    f32::max(new_value, 1e-12)
 }
 
 pub fn compute_weight(average_flow: f32, length: f32, car_count: i32) -> Weight {
