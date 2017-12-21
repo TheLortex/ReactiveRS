@@ -407,16 +407,16 @@ impl ValueRuntime for PureSignalValueRuntime {
         return;
     }
 
-    fn await_in<C>(&self, runtime: &mut Runtime, c:C) where C: Continuation<Self::V2> {
-        return;
+    fn await_in<C>(&self, runtime: &mut Runtime, _c:C) where C: Continuation<Self::V2> {
+        unreachable!()
     }
 
-    fn release_await_in(&self, runtime: &mut Runtime) {
-        return;
+    fn release_await_in(&self, _runtime: &mut Runtime) {
+        unreachable!()
     }
 
     fn get(&self) -> Self::V2 {
-        unimplemented!()
+        unreachable!()
     }
 }
 
@@ -462,13 +462,13 @@ impl<V1, V2> ValueRuntime for MCSignalValueRuntime<V1, V2> where V2: Clone + 'st
     type V1 = V1;
     type V2 = V2;
 
-    fn emit(&self, runtime: &mut Runtime, v: Self::V1) {
+    fn emit(&self, _runtime: &mut Runtime, v: Self::V1) {
         let mut opt_v2 = self.value.lock().unwrap();
         let v2 = unpack_mutex(&mut opt_v2);
         *opt_v2 = Some((self.gather)(v, v2));
     }
 
-    fn await_in<C>(&self, runtime: &mut Runtime, c:C) where C: Continuation<Self::V2> {
+    fn await_in<C>(&self, _runtime: &mut Runtime, c:C) where C: Continuation<Self::V2> {
         self.waiting_in.lock().unwrap().push(Box::new(c));
     }
 
@@ -549,13 +549,13 @@ impl<V1, V2> ValueRuntime for MPSCSignalValueRuntime<V1, V2> where V2: Default +
     type V1 = V1;
     type V2 = V2;
 
-    fn emit(&self, runtime: &mut Runtime, v: Self::V1) {
+    fn emit(&self, _runtime: &mut Runtime, v: Self::V1) {
         let mut opt_v2 = self.value.lock().unwrap();
         let v2 = unpack_mutex(&mut opt_v2);
-        *opt_v2 = (Some((self.gather)(v, v2)));
+        *opt_v2 = Some((self.gather)(v, v2));
     }
 
-    fn await_in<C>(&self, runtime: &mut Runtime, c:C) where C: Continuation<Self::V2> {
+    fn await_in<C>(&self, _runtime: &mut Runtime, c:C) where C: Continuation<Self::V2> {
         *self.waiting_in.lock().unwrap() = Some(Box::new(c));
     }
 
@@ -573,7 +573,7 @@ impl<V1, V2> ValueRuntime for MPSCSignalValueRuntime<V1, V2> where V2: Default +
         }
 
         // Finally, we reset the signal value.
-        *opt_value = (Some(V2::default()));
+        *opt_value = Some(V2::default());
     }
 
     fn get(&self) -> V2 {
@@ -648,11 +648,11 @@ impl<V> ValueRuntime for SPMCSignalValueRuntime<V> where V: Clone + 'static + Se
     type V1 = V;
     type V2 = V;
 
-    fn emit(&self, runtime: &mut Runtime, v: Self::V1) {
+    fn emit(&self, _runtime: &mut Runtime, v: Self::V1) {
         *(self.value.lock().unwrap()) = Some(v);
     }
 
-    fn await_in<C>(&self, runtime: &mut Runtime, c:C) where C: Continuation<Self::V2> {
+    fn await_in<C>(&self, _runtime: &mut Runtime, c:C) where C: Continuation<Self::V2> {
         self.waiting_in.lock().unwrap().push(Box::new(c));
     }
 

@@ -144,7 +144,6 @@ impl CrossRoad {
 //                max = roads[r].get_car_count();
 //            }
 //        }
-//
 //        roads[r_max].enable();
 
         // Second policy: we enable the most loaded roads with guys waiting, but in pairs.

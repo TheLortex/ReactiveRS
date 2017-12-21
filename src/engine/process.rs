@@ -1,6 +1,5 @@
 use super::Runtime;
 use super::continuation::Continuation;
-use std::cell::Cell;
 use std::sync::{Arc, Mutex};
 use super::signal::*;
 use std::thread;
@@ -308,7 +307,7 @@ impl<P, Q> Process for Join<P, Q>
         });
         let join_point2 = join_point.clone();
         let c1 = move |runtime: &mut Runtime, v1: P::Value| {
-            let mut ok;
+            let ok;
             {
                 let v2 = join_point.v2.lock().unwrap();
                 if let Some(ref val) = *v2 {
@@ -333,7 +332,7 @@ impl<P, Q> Process for Join<P, Q>
             }
         };
         let c2 = move |runtime: &mut Runtime, v2: Q::Value| {
-            let mut ok;
+            let ok;
             {
                 let v1 = join_point2.v1.lock().unwrap();
                 if let Some(ref val) = *v1 {
@@ -403,7 +402,7 @@ impl<P> Process for MultiJoin<P>
             let join_point = join_point_original.clone();
            // println!("Creating: {}", Arc::strong_count(&join_point));
             let c = move |runtime: &mut Runtime, v: P::Value| {
-                let mut ok;
+                let ok;
                 {
                     let mut remaining = join_point.remaining.lock().unwrap();
                     if *remaining == 1 {
@@ -439,7 +438,7 @@ impl<P> Process for MultiJoin<P>
            // println!("After call: {}", Arc::strong_count(&join_point_original));
         };
 
-        let mut ok;
+        let ok;
         {
             let mut remaining = join_point_original.remaining.lock().unwrap();
             if *remaining == 1 {
@@ -456,7 +455,7 @@ impl<P> Process for MultiJoin<P>
                 _ => panic! ("Process join failed."),
             };
 
-            let mut value = join_point_original.value.into_inner().unwrap();
+            let value = join_point_original.value.into_inner().unwrap();
             let continuation = join_point_original.continuation.into_inner().unwrap().unwrap();
             continuation.call(runtime, value.into_iter().map(| v | { v.unwrap() }).collect());
         }

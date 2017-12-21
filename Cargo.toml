@@ -22,3 +22,7 @@ path = "src/lib.rs"
 [[bin]]
 name = "trafficsim"
 path = "src/traffic_sim.rs"
+
+[[bin]]
+name = "gameoflife"
+path = "src/game_of_life.rs"

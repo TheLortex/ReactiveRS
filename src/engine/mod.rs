@@ -5,20 +5,15 @@ pub mod signal;
 extern crate coco;
 extern crate itertools;
 
-use std;
 use self::continuation::Continuation;
 use self::process::Process;
 
 /// TODO: Check if legal to use (compare with proposed method)
 use self::coco::deque::{self, Worker, Stealer};
-use self::itertools::multizip;
-use self::itertools::Zip;
 
 use std::sync::{Arc, Barrier};
 use std::sync::atomic::{AtomicIsize, Ordering};
 use std::thread;
-use std::thread::JoinHandle;
-use std::borrow::BorrowMut;
 
 type JobStealer = Stealer<Box<Continuation<()>>>;
 
@@ -36,11 +31,11 @@ pub struct SharedData {
 
 impl ParallelRuntime {
     pub fn new(n_workers: usize) -> Self {
-        /// Create dequeue for jobs.
+        // Create dequeue for jobs.
         let (mut worker_job_cur_instant, stealer_job_cur_instant): (Vec<_>, Vec<_>) =
             (0..n_workers).map(|_| deque::new()).unzip();
 
-        /// Shared data structure between workers.
+        // Shared data structure between workers.
         let shared_data = SharedData {
             runtimes_jobs: stealer_job_cur_instant,
             n_local_working: AtomicIsize::new(0),
@@ -48,13 +43,13 @@ impl ParallelRuntime {
             sync_barrier: Barrier::new(n_workers),
         };
 
-        /// Instantiation of ParallelRuntime.
+        // Instantiation of ParallelRuntime.
         let mut r = ParallelRuntime {
             shared_data: Arc::new(shared_data),
             runtimes: vec!(),
         };
 
-        /// Creation of workers.
+        // Creation of workers.
         while let Some(cur_instant_worker) = worker_job_cur_instant.pop() {
             // spawn threads.
             let mut runtime = Runtime::new(r.shared_data.clone(), cur_instant_worker);
@@ -69,7 +64,7 @@ impl ParallelRuntime {
 
         let mut join_handles = vec!();
 
-        /// Start workers.
+        // Start workers.
         while let Some(mut runtime) = self.runtimes.pop() {
             let mut b = thread::Builder::new();
             b = b.name("RRS Worker".to_string());
@@ -83,7 +78,7 @@ impl ParallelRuntime {
             join_handles.push(handle);
         }
 
-        /// Wait for work to be done.
+        // Wait for work to be done.
         while let Some(x) = join_handles.pop() {
             self.runtimes.push(x.join().unwrap());
         };
