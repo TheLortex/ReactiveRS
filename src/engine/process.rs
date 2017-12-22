@@ -2,6 +2,7 @@ use super::Runtime;
 use super::continuation::Continuation;
 use std::sync::{Arc, Mutex};
 use super::signal::*;
+use super::signal::signal_runtime::*;
 use std::thread;
 
 /// A reactive process.
