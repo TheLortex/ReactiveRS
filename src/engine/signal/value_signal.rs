@@ -11,7 +11,7 @@ use std::sync::Mutex;
 */
 
 /// Value Runtime for ValueSignal.
-pub struct MCSignalValueRuntime<V1, V2> {
+pub struct ValueSignalValueRuntime<V1, V2> {
     waiting_in: Mutex<Vec<Box<Continuation<V2>>>>,
     value: Mutex<Option<V2>>,   // We wrap the value in an Option to avoid to clone the value at
                                 // each update.
@@ -20,7 +20,7 @@ pub struct MCSignalValueRuntime<V1, V2> {
     gather: Box<(Fn(V1, V2) -> V2) + Send + Sync>,
 }
 
-impl<V1, V2> ValueRuntime for MCSignalValueRuntime<V1, V2>
+impl<V1, V2> ValueRuntime for ValueSignalValueRuntime<V1, V2>
     where V1: Clone + 'static + Send + Sync, V2: Clone + 'static + Send + Sync
 {
     type V1 = V1;
@@ -61,17 +61,20 @@ impl<V1, V2> ValueRuntime for MCSignalValueRuntime<V1, V2>
 
 #[derive(Clone)]
 /// Basic MPMC signal with a value. Output type must implement Clone.
-pub struct MCSignal<V1, V2> where V1: 'static + Clone + Send + Sync, V2: Clone + 'static + Send + Sync {
-    signal: SignalRuntimeRef<MCSignalValueRuntime<V1, V2>>,
+pub struct ValueSignal<V1, V2>
+    where V1: 'static + Clone + Send + Sync, V2: Clone + 'static + Send + Sync
+{
+    signal: SignalRuntimeRef<ValueSignalValueRuntime<V1, V2>>,
 }
 
-impl<V1, V2> MCSignal<V1, V2> where V1: 'static + Clone + Send + Sync, V2: Clone + Send + Sync {
-
+impl<V1, V2> ValueSignal<V1, V2>
+    where V1: 'static + Clone + Send + Sync, V2: Clone + Send + Sync
+{
     /// Creates a new Value Signal from a default value and a combination function `gather`.
     pub fn new<F>(default: V2, gather: F) -> Self
         where F: Fn(V1, V2) -> V2 + 'static, F: Send + Sync
     {
-        let value_runtime = MCSignalValueRuntime {
+        let value_runtime = ValueSignalValueRuntime {
             waiting_in: Mutex::new(vec!()),
             value: Mutex::new(Some(default.clone())),
             default,
@@ -79,19 +82,30 @@ impl<V1, V2> MCSignal<V1, V2> where V1: 'static + Clone + Send + Sync, V2: Clone
             gather: Box::new(gather),
         };
 
-        MCSignal { signal: SignalRuntimeRef::new(value_runtime) }
+        ValueSignal { signal: SignalRuntimeRef::new(value_runtime) }
     }
 }
 
-impl<V1, V2> Signal for MCSignal<V1, V2> where V1: 'static + Clone + Send + Sync, V2: 'static + Clone + Send + Sync {
-    type VR = MCSignalValueRuntime<V1, V2>;
+impl<V1, V2> Signal for ValueSignal<V1, V2>
+    where V1: 'static + Clone + Send + Sync, V2: 'static + Clone + Send + Sync
+{
+    type VR = ValueSignalValueRuntime<V1, V2>;
 
     fn runtime(&self) -> SignalRuntimeRef<Self::VR> {
         self.signal.clone()
     }
 }
 
-impl<V1, V2> SEmit for MCSignal<V1, V2> where V1: 'static + Clone + Send + Sync, V2: 'static + Clone + Send + Sync {}
-impl<V1, V2> SAwaitIn for MCSignal<V1, V2> where V1: 'static + Clone + Send + Sync, V2: 'static + Clone + Send + Sync {}
-impl<V1, V2> SAwaitOneImmediate for MCSignal<V1, V2> where V1: 'static + Clone + Send + Sync, V2: 'static + Clone + Send + Sync {}
+impl<V1, V2> SEmit for ValueSignal<V1, V2>
+    where V1: 'static + Clone + Send + Sync, V2: 'static + Clone + Send + Sync {}
+impl<V1, V2> SAwaitIn for ValueSignal<V1, V2>
+    where V1: 'static + Clone + Send + Sync, V2: 'static + Clone + Send + Sync {}
+impl<V1, V2> SAwaitOneImmediate for ValueSignal<V1, V2>
+    where V1: 'static + Clone + Send + Sync, V2: 'static + Clone + Send + Sync {}
 
+
+pub fn new<F, V1, V2>(default: V2, gather: F) -> ValueSignal<V1, V2>
+    where V1: 'static + Clone + Send + Sync, V2: 'static + Clone + Send + Sync,
+          F: Fn(V1, V2) -> V2 + 'static, F: Send + Sync {
+    ValueSignal::new(default, gather)
+}

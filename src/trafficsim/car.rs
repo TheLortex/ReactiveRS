@@ -1,6 +1,8 @@
 extern crate reactivers;
 use reactivers::engine::process::*;
 use reactivers::engine::signal::*;
+use reactivers::engine::signal::mpsc_signal::MPSCSignalSender;
+use reactivers::engine::signal::spmc_signal::SPMCSignalReceiver;
 
 use super::graph::*;
 use super::road::*;
@@ -99,8 +101,8 @@ impl Car {
         (self.action, self.speed)
     }
 
-    pub fn process(mut self, central_signal: SPMCSignal<Arc<GlobalInfos>>,
-                   pos_signal: MPSCSignal<(CarId, (Action, Speed)), (Vec<Action>, Vec<Speed>)>) -> impl Process<Value=()>
+    pub fn process(mut self, central_signal: SPMCSignalReceiver<Arc<GlobalInfos>>,
+                   pos_signal: MPSCSignalSender<(CarId, (Action, Speed)), (Vec<Action>, Vec<Speed>)>) -> impl Process<Value=()>
     {
         let id = self.id;
 
