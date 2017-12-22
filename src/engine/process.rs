@@ -296,6 +296,7 @@ pub struct JoinPoint<V1, V2, C> where C: Continuation<(V1, V2)>, V1: Send, V2: S
     continuation: Mutex<Option<C>>,
 }
 
+/// Parallel execution of two processes.
 impl<P, Q> Process for Join<P, Q>
     where P: Process, Q: Process, P::Value: Send, Q::Value: Send
 {
@@ -388,22 +389,28 @@ pub fn multi_join<P>(ps: Vec<P>) -> MultiJoin<P> {
 
 use std::time;
 
+/// Parallel execution of a list of processes.
 impl<P> Process for MultiJoin<P>
     where P: Process, P::Value: Send
 {
     type Value = Vec<P::Value>;
 
+    /// Launch execution of processes, then calling the `next` continuation when every process has finished.
     fn call<C>(self, runtime: &mut Runtime, next: C) where C: Continuation<Self::Value>, C: Sized {
+        // Shared data structure containing worker data.
         let join_point_original = Arc::new(MultiJoinPoint {
             remaining: Mutex::new(self.ps.len()+1),
             value: Mutex::new((0..self.ps.len()).map(|_| { None }).collect()),
             continuation: Mutex::new(Some(next)),
         });
 
+        // List processes to run.
         for (i, p) in self.ps.into_iter().enumerate() {
+            // Clone shared data pointer.
             let join_point = join_point_original.clone();
-           // println!("Creating: {}", Arc::strong_count(&join_point));
+            // Create end of process continuation.
             let c = move |runtime: &mut Runtime, v: P::Value| {
+                // Check if someone is still working.
                 let ok;
                 {
                     let mut remaining = join_point.remaining.lock().unwrap();
@@ -419,26 +426,33 @@ impl<P> Process for MultiJoin<P>
                         return;
                     }
                 }
+                // Here this is executed when the last process has finished.
 
-                if ok {
-                    // Wait for remaining references to be freed.
-                    while Arc::strong_count(&join_point) > 1 {
-                        thread::sleep(time::Duration::from_millis(10));
-                    }
-                    let join_point = match Arc::try_unwrap(join_point) {
-                        Ok(val) => val,
-                        _ => panic!("Process join failed."),
-                    };
-
-                    let mut value = join_point.value.into_inner().unwrap();
-                    let continuation = join_point.continuation.into_inner().unwrap().unwrap();
-                    value[i] = Some(v);
-                    continuation.call(runtime, value.into_iter().map(|v| { v.unwrap() }).collect());
+                // Wait for remaining references to be free.
+                while Arc::strong_count(&join_point) > 1 {
+                    thread::sleep(time::Duration::from_millis(10));
                 }
+
+                // Get ownership of `join_point`.
+                let join_point = match Arc::try_unwrap(join_point) {
+                    Ok(val) => val,
+                    _ => panic!("Process join failed."),
+                };
+
+                // Get ownership of processes values and next continuation.
+                let mut value = join_point.value.into_inner().unwrap();
+                let continuation = join_point.continuation.into_inner().unwrap().unwrap();
+                value[i] = Some(v);
+
+                // Call next continuation.
+                continuation.call(runtime, value.into_iter().map(|v| { v.unwrap() }).collect());
+
             };
             p.call(runtime, c);
-           // println!("After call: {}", Arc::strong_count(&join_point_original));
         };
+
+        // Maybe everything has been done so quickly that `join_point_original` is the last reference to the join point structure.
+        // Then we have to do the same work as before by getting ownership of the data and callling the next continuation.
 
         let ok;
         {
@@ -450,8 +464,8 @@ impl<P> Process for MultiJoin<P>
             }
             *remaining -= 1;
         }
+
         if ok {
-            println!("Joining end: {}", Arc::strong_count(&join_point_original));
             let join_point_original = match Arc::try_unwrap(join_point_original) {
                 Ok(val) => val,
                 _ => panic! ("Process join failed."),
