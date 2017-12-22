@@ -5,7 +5,7 @@ use std::sync::Mutex;
 /*
         SPMC Signal
     The SPMC Signal (Single Producer, Multiple Consumer) is a signal which can be emitted only once
-    but can be received many times. To guarantee this, the signal creation function `spmc_signal`
+    but can be received many times. To guarantee this, the signal init function `spmc_signal::new`
     returns two different parts:
     - SPMCSignalSender:     implements SEmitConsume.
     - SPMCSignalReceiver:   implements SAwaitIn.
@@ -88,7 +88,7 @@ impl<V> SAwaitOneImmediate for SPMCSignalReceiver<V> where V: 'static + Clone + 
 impl<V> SEmitConsume for SPMCSignalSender<V> where V: 'static + Clone + Send + Sync {}
 
 
-pub fn spmc_signal<V>() -> (SPMCSignalSender<V>, SPMCSignalReceiver<V>) where V: Clone + Send + Sync
+pub fn new<V>() -> (SPMCSignalSender<V>, SPMCSignalReceiver<V>) where V: Clone + Send + Sync
 {
     let value_runtime = SPMCSignalValueRuntime {
         waiting_in: Mutex::new(vec!()),

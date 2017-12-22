@@ -54,3 +54,7 @@ impl Signal for PureSignal {
 }
 
 impl SEmit for PureSignal {}
+
+pub fn new() -> PureSignal {
+    PureSignal::new()
+}

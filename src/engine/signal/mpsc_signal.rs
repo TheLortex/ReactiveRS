@@ -5,7 +5,7 @@ use std::sync::Mutex;
 /*
         MPSC Signal
     The MPSC Signal (Multiple Producer, Single Consumer) is a signal which can be emitted many times
-    but can only be received once. To guarantee this, the signal creation function `mpsc_signal`
+    but can only be received once. To guarantee this, the signal init function `mpsc_signal::new`
     returns two different parts:
     - MPSCSignalSender:     implements SEmit.
     - MPSCSignalReceiver:   implements SAwaitInConsume.
@@ -100,7 +100,7 @@ impl<V1, V2> SAwaitInConsume for MPSCSignalReceiver<V1, V2>
     where V1: 'static + Send + Sync, V2: 'static + Default + Send + Sync {}
 
 
-pub fn mpsc_signal<V1, V2, F>(gather: F) -> (MPSCSignalSender<V1, V2>, MPSCSignalReceiver<V1, V2>)
+pub fn new<V1, V2, F>(gather: F) -> (MPSCSignalSender<V1, V2>, MPSCSignalReceiver<V1, V2>)
     where V1: 'static + Send + Sync, V2: Default + Send + Sync,
           F: Fn(V1, V2) -> V2 + 'static, F: Send + Sync
 {

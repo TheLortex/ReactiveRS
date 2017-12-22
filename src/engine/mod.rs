@@ -227,7 +227,12 @@ impl Runtime {
 
 use std::sync::{Mutex};
 
-pub fn execute_process<P>(process: P, n_workers: usize, max_iters: i32) -> P::Value where P:Process, P::Value: Send {
+
+pub fn execute_process<P>(process: P) -> P::Value where P:Process, P::Value: Send {
+    execute_process_steps(process, 6, -1)
+}
+
+pub fn execute_process_steps<P>(process: P, n_workers: usize, max_iters: i32) -> P::Value where P:Process, P::Value: Send {
     // let mut r = Runtime::new(1);
     let result: Arc<Mutex<Option<P::Value>>> = Arc::new(Mutex::new(None));
     let result2 = result.clone();
@@ -256,11 +261,10 @@ mod tests {
     extern crate cpuprofiler;
     use self::cpuprofiler::PROFILER;
 
-    use engine::{Runtime, Continuation};
     use engine::process::{Process, value, LoopStatus, ProcessMut};
-    use engine::signal::{Signal, SEmit, PureSignal};
     use engine::process;
     use engine;
+    use engine::signal::*;
 
     use std::sync::{Arc, Mutex};
     use self::test::Bencher;
@@ -292,17 +296,17 @@ mod tests {
         println!("==>");
 
         let a = value(()).pause().map(|_| {
-            for i in 0..1000000 {};
+            for _ in 0..1000000 {};
             println!("42");
         });
 
         let b = value(()).pause().map(|_| {
-            for i in 0..1000000 {};
+            for _ in 0..1000000 {};
             println!("43");
         });
 
         let c = value(()).pause().map(|_| {
-            for i in 0..1000000 {};
+            for _ in 0..1000000 {};
             println!("44");
         });
 
@@ -361,13 +365,13 @@ mod tests {
         let plus_3 = move |_| {
             let mut opt_v = container.lock().unwrap();
             let v = opt_v.unwrap();
-            *opt_v = (Some(v+3));
+            *opt_v = Some(v+3);
         };
 
         let times_2 = move |_| {
             let mut opt_v = container2.lock().unwrap();
             let v = opt_v.unwrap();
-            *opt_v = (Some(v*2));
+            *opt_v = Some(v*2);
         };
 
         let p_plus_3 = process::Value::new(()).map(plus_3);
@@ -423,7 +427,7 @@ mod tests {
         let c1 = move |_| {
             let mut opt_r1 = reward.lock().unwrap();
             let v = opt_r1.unwrap();
-            *opt_r1 = (Some(v-1));
+            *opt_r1 = Some(v-1);
             if v <= 0 {
                 LoopStatus::Exit(tot1)
             } else {
@@ -434,7 +438,7 @@ mod tests {
         let c2 = move |_| {
             let mut opt_r2 = reward2.lock().unwrap();
             let v = opt_r2.unwrap();
-            *opt_r2 = (Some(v-1));
+            *opt_r2 = Some(v-1);
             if v <= 0 {
                 process::Value::new(LoopStatus::Exit(tot2))
             } else {
@@ -493,7 +497,7 @@ mod tests {
     #[test]
     #[ignore]
     fn test_pure_signal() {
-        let s = PureSignal::new();
+        let s = puresignal::new();
         let c1: fn(()) -> LoopStatus<()> = |_| {
             println!("s sent");
             LoopStatus::Continue
@@ -524,11 +528,10 @@ mod tests {
         engine::execute_process(p);
     }
 
-    use engine::signal::{MCSignal, SAwaitIn};
     #[test]
     #[ignore]
     fn test_mc_signal() {
-        let s = MCSignal::new(0, |v1, v2| {
+        let s = value_signal::new(0, |v1, v2| {
             println!("{} + {} = {}", v1, v2, v1 + v2);
             v1 + v2
         });
@@ -542,18 +545,17 @@ mod tests {
         engine::execute_process(p);
     }
 
-    use engine::signal::{MPSCSignal, SAwaitInConsume};
     #[test]
     fn test_mpsc_signal() {
         pub struct TestStruct {
             content: i32,
         }
 
-        let (s1, r1) = MPSCSignal::new(|v1: TestStruct, v2| {
+        let (s1, r1) = mpsc_signal::new(|v1: TestStruct, _| {
            Some(v1)
         });
 
-        let (s2, r2) = MPSCSignal::new(|v1: TestStruct, v2| {
+        let (s2, r2) = mpsc_signal::new(|v1: TestStruct, _| {
             Some(v1)
         });
 
@@ -575,7 +577,6 @@ mod tests {
             println!("Value seen: {}", v.content);
             let x = v.content;
             v.content += 1;
-            let condition = value(x >= 10);
             let p = {
                 if x >= 10 {
                     LoopStatus::Exit(x)
@@ -594,11 +595,10 @@ mod tests {
         assert_eq!(engine::execute_process(p), (11, 10));
     }
 
-    use engine::signal::{SPMCSignal, SPMCSignalSender, SAwaitOneImmediate, SEmitConsume};
     #[test]
     fn test_spmc_signal() {
 
-        let (s, sender) = SPMCSignal::new();
+        let (sender, receiver) = spmc_signal::new();
         let mut count = 0;
         let loop1 = move | () | {
             count += 1;
@@ -634,8 +634,8 @@ mod tests {
             }
         };
 
-        let p2 = s.await_in().map(loop2).loop_while();
-        let p3 = s.await_one_immediate().map(loop3).pause().loop_while();
+        let p2 = receiver.await_in().map(loop2).loop_while();
+        let p3 = receiver.await_one_immediate().map(loop3).pause().loop_while();
         let p = p1.join(p2.join(p3));
         assert_eq!(engine::execute_process(p), (10, (20, 20)));
     }
