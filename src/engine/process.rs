@@ -252,7 +252,7 @@ impl <P, Q> Process for Then<P, Q>
 
         let p2 = self.process2;
 
-        let c = move |runtime: &mut Runtime, v1: P::Value| {
+        let c = move |runtime: &mut Runtime, _: P::Value| {
             p2.call(runtime, next);
         };
 
@@ -270,7 +270,7 @@ impl<P, Q> ProcessMut for Then<P, Q>
         let p2 = self.process2;
 
         let c = move |runtime: &mut Runtime, v: (P, P::Value)| {
-            let (p1, v1) = v;
+            let (p1, _) = v;
 
             let c2 = next.map(move |v: (Q, Q::Value)| {
                 let (p2, v2) = v;
@@ -310,12 +310,12 @@ impl<P, Q> Process for Join<P, Q>
             let ok;
             {
                 let v2 = join_point.v2.lock().unwrap();
-                if let Some(ref val) = *v2 {
+                if let Some(_) = *v2 {
                     ok = true;
                 }
-                    else {
-                        ok = false;
-                    }
+                else {
+                    ok = false;
+                }
             }
 
             if ok {
@@ -335,7 +335,7 @@ impl<P, Q> Process for Join<P, Q>
             let ok;
             {
                 let v1 = join_point2.v1.lock().unwrap();
-                if let Some(ref val) = *v1 {
+                if let Some(_) = *v1 {
                     ok = true;
                 } else {
                     ok = false;
@@ -386,6 +386,8 @@ pub fn multi_join<P>(ps: Vec<P>) -> MultiJoin<P> {
     MultiJoin { ps }
 }
 
+use std::time;
+
 impl<P> Process for MultiJoin<P>
     where P: Process, P::Value: Send
 {
@@ -421,7 +423,7 @@ impl<P> Process for MultiJoin<P>
                 if ok {
                     // Wait for remaining references to be freed.
                     while Arc::strong_count(&join_point) > 1 {
-                        thread::sleep_ms(10);
+                        thread::sleep(time::Duration::from_millis(10));
                     }
                     let join_point = match Arc::try_unwrap(join_point) {
                         Ok(val) => val,

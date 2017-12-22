@@ -112,6 +112,8 @@ pub struct Runtime {
     manager:        Arc<SharedData>,
 }
 
+use std::time;
+
 impl Runtime {
     /// Creates a new `Runtime`.
     pub fn new(manager: Arc<SharedData>,
@@ -163,7 +165,7 @@ impl Runtime {
 
                 // Nothing was stolen but someone is still working, try to steal later on.
                 if !stolen {
-                    thread::sleep_ms(5);
+                    thread::sleep(time::Duration::from_millis(10));
                 }
             }
 
@@ -223,7 +225,6 @@ impl Runtime {
     }
 }
 
-use std::cell::Cell;
 use std::sync::{Mutex};
 
 pub fn execute_process<P>(process: P, n_workers: usize, max_iters: i32) -> P::Value where P:Process, P::Value: Send {
@@ -234,7 +235,7 @@ pub fn execute_process<P>(process: P, n_workers: usize, max_iters: i32) -> P::Va
     let mut r = ParallelRuntime::new(n_workers);
 
     let todo = Box::new(move |mut runtime: &mut Runtime, ()| {
-        process.call(&mut runtime, move|runtime: &mut Runtime, value: P::Value| {
+        process.call(&mut runtime, move |_: &mut Runtime, value: P::Value| {
             *result2.lock().unwrap() = Some(value);
         });
     });
