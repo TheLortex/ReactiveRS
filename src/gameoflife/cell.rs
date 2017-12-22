@@ -2,7 +2,7 @@ extern crate reactivers;
 extern crate itertools;
 
 use reactivers::engine::process::*;
-use reactivers::engine::signal::value_signal::MCSignal;
+use reactivers::engine::signal::value_signal::ValueSignal;
 use reactivers::engine::signal::mpsc_signal::MPSCSignalSender;
 use reactivers::engine::signal::*;
 
@@ -34,8 +34,8 @@ impl GameCell {
     }
 
     pub fn process(mut self,
-                   life_signal: MCSignal<(), i32>,
-                   neighbors_signal: Vec<MCSignal<(), i32>>,
+                   life_signal: ValueSignal<(), i32>,
+                   neighbors_signal: Vec<ValueSignal<(), i32>>,
                    (status_signal, x, y): (MPSCSignalSender<(usize, usize), Vec<(bool, usize, usize)>>, usize, usize)) -> impl Process<Value=()> {
         let write_neighbors = neighbors_signal.iter().map(|signal  | {
             value(()).emit(signal)

@@ -2,8 +2,8 @@ extern crate reactivers;
 extern crate itertools;
 extern crate cpuprofiler;
 
-use reactivers::engine::signal::value_signal::MCSignal;
-use reactivers::engine::signal::mpsc_signal::*;
+use reactivers::engine::signal::*;
+use reactivers::engine::signal::value_signal::ValueSignal;
 use reactivers::engine::process::*;
 use reactivers::engine;
 
@@ -43,7 +43,7 @@ pub fn run_simulation (starting_grid: Vec<Vec<bool>>, watcher: TerminalWatcher)
     }
     let m = starting_grid[0].len();
 
-    let (multi_producer, single_consumer) = mpsc_signal(|(x, y), mut alive_list: Vec<(bool, usize, usize)>| {
+    let (multi_producer, single_consumer) = mpsc_signal::new(|(x, y), mut alive_list: Vec<(bool, usize, usize)>| {
         alive_list.push((true, x, y));
         alive_list
     });
@@ -51,14 +51,14 @@ pub fn run_simulation (starting_grid: Vec<Vec<bool>>, watcher: TerminalWatcher)
     // Create cells and associated signals.
     let mut cell_signal_grid = starting_grid.iter().map(|line| {
         line.iter().map(|start_status| {
-            (GameCell::new(*start_status), MCSignal::new(0, |(), y| 1 + y), multi_producer.clone())
+            (GameCell::new(*start_status), value_signal::new(0, |(), y| 1 + y), multi_producer.clone())
         }).collect_vec()
     }).collect_vec();
 
     // Create for each cell references to neighbor signals + save a copy for the watcher process.
     let mut neighbors_grid = starting_grid.iter().enumerate().map(|(x, line)| {
         let neighbors_line = line.iter().enumerate().map(|(y, _)| {
-            let mut ref_signals: Vec<MCSignal<(), i32>> = vec!();
+            let mut ref_signals: Vec<ValueSignal<(), i32>> = vec!();
 
             for px in -1..2 {
                 for py in -1..2 {
@@ -121,6 +121,6 @@ pub fn run_simulation (starting_grid: Vec<Vec<bool>>, watcher: TerminalWatcher)
 
     // Run the thing
     //PROFILER.lock().unwrap().start("./profile").unwrap();
-    engine::execute_process(simulation_process, 8, 1000);
+    engine::execute_process(simulation_process, );
     //PROFILER.lock().unwrap().stop().unwrap();
 }
