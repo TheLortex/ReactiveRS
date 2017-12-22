@@ -2,7 +2,10 @@ extern crate reactivers;
 extern crate itertools;
 
 use reactivers::engine::process::*;
+use reactivers::engine::signal::value_signal::MCSignal;
+use reactivers::engine::signal::mpsc_signal::MPSCSignalSender;
 use reactivers::engine::signal::*;
+
 
 use self::itertools::Itertools;
 
@@ -17,7 +20,7 @@ impl GameCell {
         }
     }
 
-    pub fn update(&mut self, alive_neighbor_count: usize) -> bool {
+    pub fn update(&mut self, alive_neighbor_count: i32) -> bool {
         if self.status_is_alive {
             if (alive_neighbor_count <= 1) || (alive_neighbor_count >= 4) {
                 self.status_is_alive = false
@@ -30,31 +33,42 @@ impl GameCell {
         self.status_is_alive
     }
 
-
-    pub fn process(mut self, life_signal: MCSignal<bool, bool>, neighbors_signal: Vec<MCSignal<bool, bool>>) -> impl Process<Value=()> {
-        let wait_neighbors = neighbors_signal.iter().map(|signal  | {
-            signal.await_in()
+    pub fn process(mut self,
+                   life_signal: MCSignal<(), i32>,
+                   neighbors_signal: Vec<MCSignal<(), i32>>,
+                   (status_signal, x, y): (MPSCSignalSender<(usize, usize), Vec<(bool, usize, usize)>>, usize, usize)) -> impl Process<Value=()> {
+        let write_neighbors = neighbors_signal.iter().map(|signal  | {
+            value(()).emit(signal)
         }).collect_vec();
+        let write_neighbors2 = neighbors_signal.iter().map(|signal  | {
+            value(()).emit(signal)
+        }).collect_vec();
+
+        let mut send_status_alive = value((x, y)).emit(&status_signal);
+        let mut send_status_alive2 = value((x, y)).emit(&status_signal);
 
         let status_is_alive = self.status_is_alive;
 
-        let mut update_cell = move |signal_result: Vec<bool>| {
-            let alive_neighbor_count = signal_result.iter().fold(0, |tot, value|
-                {
-                    if *value {
-                        tot + 1
-                    } else {
-                        tot
-                    }
-                });
+        let mut update_cell = move |alive_neighbor_count: i32| {
             self.update(alive_neighbor_count)
         };
 
-        let p = value(status_is_alive).emit(&life_signal)
-            .then(
-                multi_join(wait_neighbors).map(update_cell).emit(&life_signal)
-                    .loop_inf()
-            );
+        let cont_unit = |_| ();
+
+        let p =
+            value(status_is_alive)
+            .then_else(
+                send_status_alive.multi_join(write_neighbors),
+                value(((), vec!())))
+            .then(life_signal
+                .await_in()
+                .map(update_cell)
+                .then_else(
+                 send_status_alive2.multi_join(write_neighbors2).map(cont_unit),
+                 value(())
+
+                )
+                .loop_inf());
         p
     }
 }

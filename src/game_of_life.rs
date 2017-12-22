@@ -1,4 +1,5 @@
 #![feature(conservative_impl_trait)]
+#![type_length_limit="2097152"]
 
 extern crate reactivers;
 extern crate rand;

@@ -3,8 +3,8 @@ extern crate itertools;
 extern crate ncurses;
 
 use reactivers::engine::process::*;
+use reactivers::engine::signal::mpsc_signal::MPSCSignalReceiver;
 use reactivers::engine::signal::*;
-
 
 use self::itertools::Itertools;
 use std::thread;
@@ -48,28 +48,11 @@ impl TerminalWatcher {
         (start_y, start_x, win)
     }
 
-    pub fn process(mut self, mut signal_grid: Vec<Vec<MCSignal<bool, bool>>>) -> impl Process<Value=()> {
+    pub fn process(mut self, alive_signal: MPSCSignalReceiver<(usize, usize), Vec<(bool, usize, usize)>>) -> impl Process<Value=()> {
         if self.auto {
             ncurses::timeout(500);
         } else {
             ncurses::timeout(-1);
-        }
-
-        let mut updater_processes = vec!();
-
-        let mut x = 0;
-        let mut y = 0;
-        while let Some(mut line) = signal_grid.pop() {
-            y = 0;
-            while let Some(signal) = line.pop() {
-                let (x_, y_) = (x, y);
-                let mut cont = move |status| {
-                    (status, x, y)
-                };
-                updater_processes.push(signal.await_in().map(cont));
-                y += 1;
-            }
-            x += 1;
         }
 
         let mut show_and_sleep_cont = move |data: Vec<(bool, usize, usize)>| {
@@ -90,6 +73,6 @@ impl TerminalWatcher {
             }
 
         };
-        multi_join(updater_processes).map(show_and_sleep_cont).loop_inf()
+        alive_signal.await_in().map(show_and_sleep_cont).loop_inf()
     }
 }
