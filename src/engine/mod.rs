@@ -261,124 +261,77 @@ mod tests {
     extern crate cpuprofiler;
     use self::cpuprofiler::PROFILER;
 
-    use engine::process::{Process, value, LoopStatus, ProcessMut};
+    use engine::process::{Process, value, LoopStatus, ProcessMut, multi_join};
     use engine::process;
     use engine;
     use engine::signal::*;
 
     use std::sync::{Arc, Mutex};
     use self::test::Bencher;
-//    #[test]
-//    fn test_42() {
-//        println!("==> test_42");
-//
-//        let continuation_42 = |r: &mut Runtime, v: ()| {
-//            r.on_next_instant(Box::new(|r: &mut Runtime, v: ()| {
-//                r.on_next_instant(Box::new(|r: &mut Runtime, v: ()| {
-//                    println!("42");
-//                }));
-//            }));
-//        };
-//        let mut r = Runtime::new();
-//        //    r.on_current_instant(Box::new(continuation_42));
-//        //    r.execute();
-//
-//        r.on_current_instant(Box::new(continuation_42));
-//        r.execute();
-//        r.instant();
-//        r.instant();
-//        r.instant();
-//        println!("<== test_42");
-//    }
 
     #[test]
-    fn test_parallel_42() {
-        println!("==>");
-
-        let a = value(()).pause().map(|_| {
-            for _ in 0..1000000 {};
-            println!("42");
-        });
-
-        let b = value(()).pause().map(|_| {
-            for _ in 0..1000000 {};
-            println!("43");
-        });
-
-        let c = value(()).pause().map(|_| {
-            for _ in 0..1000000 {};
-            println!("44");
-        });
-
-        engine::execute_process(a.join(b).join(c));
+    fn test_map() {
+        for i in 0..10 {
+            let p = value(i);
+            let program = p.map(|x| 3*x+2);
+            assert_eq!(engine::execute_process(program), 3*i+2);
+        }
     }
 
-//    #[test]
-//    fn test_pause() {
-//        println!("==> test_pause");
-//
-//        let c = (|r: &mut Runtime, ()| { println!("42") })
-//            .pause().pause();
-//
-//        let mut r = Runtime::new();
-//        r.on_current_instant(Box::new(c));
-//        r.instant();
-//        r.instant();
-//        r.instant();
-//
-//        println!("<== test_pause");
-//    }
-
     #[test]
-    fn test_process() {
-        println!("==> test_process");
-
-        let p = process::Value::new(42);
-        let program = p.pause().pause().map(|x| {println!("{}", x); x+4 });
-        assert_eq!(engine::execute_process(program), 46);
-
-        println!("<== test_process");
+    fn test_pause() {
+        for i in 0..10 {
+            let program = value(i).pause().pause();
+            assert_eq!(engine::execute_process(program), i);
+        }
     }
 
     #[test]
     fn test_flatten() {
-        let p = process::Value::new(42);
-        let p2 = process::Value::new(p);
-        assert_eq!(engine::execute_process(p2.flatten()), 42);
+        let p = value(42);
+        let p2 = value(p);
+        let program = p2.flatten();
+        assert_eq!(engine::execute_process(program), 42);
     }
 
     #[test]
     fn test_and_then() {
-        let p = process::Value::new(42).pause();
-        let f = |x| {
-            process::Value::new(x + 42)
-        };
-        assert_eq!(engine::execute_process(p.and_then(f)), 84);
+        for i in 0..10 {
+            let p = process::Value::new(i);
+            let f = |x| {
+                process::Value::new(2*x + 3)
+            };
+            assert_eq!(engine::execute_process(p.and_then(f)), 2*i + 3);
+        }
     }
 
     #[test]
     fn test_then() {
-        let container = Arc::new(Mutex::new(Some(0)));
-        let container2 = container.clone();
-        let container3 = container.clone();
+        for i in 0..10 {
+            let container = Arc::new(Mutex::new(Some(i)));
+            let container2 = container.clone();
+            let container3 = container.clone();
 
-        let plus_3 = move |_| {
-            let mut opt_v = container.lock().unwrap();
-            let v = opt_v.unwrap();
-            *opt_v = Some(v+3);
-        };
+            // Operation that add 3 to the container.
+            let plus_3 = move |_| {
+                let mut opt_v = container.lock().unwrap();
+                let v = opt_v.unwrap();
+                *opt_v = Some(v+3);
+            };
 
-        let times_2 = move |_| {
-            let mut opt_v = container2.lock().unwrap();
-            let v = opt_v.unwrap();
-            *opt_v = Some(v*2);
-        };
+            // Operation that doubles the container.
+            let times_2 = move |_| {
+                let mut opt_v = container2.lock().unwrap();
+                let v = opt_v.unwrap();
+                *opt_v = Some(v*2);
+            };
 
-        let p_plus_3 = process::Value::new(()).map(plus_3);
-        let p_times_2 = process::Value::new(()).map(times_2);
+            let p_plus_3 = value(()).map(plus_3);
+            let p_times_2 = value(()).map(times_2);
 
-        engine::execute_process(p_plus_3.then(p_times_2.pause()));
-        assert_eq!(6, container3.lock().unwrap().unwrap());
+            engine::execute_process(p_plus_3.then(p_times_2));
+            assert_eq!(2*(i+3), container3.lock().unwrap().unwrap());
+        }
     }
 
     #[test]
@@ -395,36 +348,64 @@ mod tests {
         let reward = Arc::new(Mutex::new(Some(42)));
         let reward2 = reward.clone();
 
-        let p = process::Value::new(reward).pause().pause().pause().pause()
+        // A process that pauses 4 times and then returns the reward if it has not been taken.
+        let slower = process::Value::new(reward).pause().pause().pause().pause()
             .map(|v| {
                 let mut v = v.lock().unwrap();
-                println!("Process p {:?}", *v);
-                let x = *v;
-                *v = None;
-                x
-            });
-        let q = process::Value::new(reward2).pause().pause().pause()
-            .map(|v| {
-                let mut v = v.lock().unwrap();
-                println!("Process q {:?}", *v);
                 let x = *v;
                 *v = None;
                 x
             });
 
-        assert_eq!((None, Some(42)), engine::execute_process(p.join(q)));
+        // A process that pauses 3 times and then returns the reward if it has not been taken.
+        let faster = process::Value::new(reward2).pause().pause().pause()
+            .map(|v| {
+                let mut v = v.lock().unwrap();
+                let x = *v;
+                *v = None;
+                x
+            });
+
+        // `faster` should try to take the reward one step before `slower`.
+        assert_eq!((Some(42), None), engine::execute_process(faster.join(slower)));
+    }
+
+    use std::thread;
+
+    #[test]
+    fn test_multijoin() {
+        let counter = Arc::new(Mutex::new(0));
+        let mut processes = vec!();
+
+        let n = 10000000;
+
+        for _ in 0..n {
+            let counter_clone = counter.clone();
+
+            let add_cont = move |_| {
+                let mut value = counter_clone.lock().unwrap();
+                *value = *value + 1;
+            };
+
+            processes.push(value(()).map(add_cont));
+        }
+
+        engine::execute_process(multi_join(processes));
+        assert_eq!(n, *counter.lock().unwrap());
     }
 
     #[test]
     fn test_loop_while() {
-        println!("==> test_loop_while");
-        let n = 10;
+        let n = 16;
         let reward = Arc::new(Mutex::new(Some(n)));
         let reward2 = reward.clone();
 
         let mut tot1 = 0;
         let mut tot2 = 0;
-        let c1 = move |_| {
+
+        // Decrementer continuation, returns a LoopStatus.
+        // The decremented value is added to tot1.
+        let decrementer_1 = move |_| {
             let mut opt_r1 = reward.lock().unwrap();
             let v = opt_r1.unwrap();
             *opt_r1 = Some(v-1);
@@ -435,34 +416,39 @@ mod tests {
                 LoopStatus::Continue
             }
         };
-        let c2 = move |_| {
+
+        // Decrementer continuation, returns a process that returns a LoopStatus.
+        // The decremented value is added to tot2.
+        let decrementer_2 = move |_| {
             let mut opt_r2 = reward2.lock().unwrap();
             let v = opt_r2.unwrap();
             *opt_r2 = Some(v-1);
             if v <= 0 {
-                process::Value::new(LoopStatus::Exit(tot2))
+                value(LoopStatus::Exit(tot2))
             } else {
                 tot2 += v;
-                process::Value::new(LoopStatus::Continue)
+                value(LoopStatus::Continue)
             }
         };
 
-        let p = process::Value::new(()).pause().pause()
-            .map(c1);
-        let q = process::Value::new(()).pause().pause()
-            .and_then(c2);
+        let loop_body_tot1 = value(()).pause().pause()
+            .map(decrementer_1);
+        let loop_body_tot2 = value(()).pause().pause()
+            .and_then(decrementer_2);
 
-        let pbis = p.loop_while();
-        let qloop = q.loop_while();
-        let qbis = process::Value::new(()).pause().then(qloop);
+        let decr_incr_loop = loop_body_tot1.loop_while();
+        let qloop = loop_body_tot2.loop_while();
+        let decr_incr_loop_translated = value(()).pause().then(qloop);
+
+        let program = decr_incr_loop.join(decr_incr_loop_translated);
+        // At each instant, only one of the two processs will be active.
+        // The result is that decr_incr_loop will compute the sum of even numbers.
+        // The result is that decr_incr_loop_shifted will compute the sum of odd numbers.
 
         let m = n / 2;
-        assert_eq!((m * (m + 1), m * m), engine::execute_process(pbis.join(qbis)));
-        println!("<== test_loop_while");
+        assert_eq!((m * (m + 1), m * m), engine::execute_process(program));
     }
 
-    #[test]
-    #[ignore]
     fn test_while_perf() {
         let mut x = 1000;
         let c = move |_| {
@@ -485,6 +471,7 @@ mod tests {
     #[test]
     #[ignore]
     fn profile_while_perf() {
+        // TODO: Check profiler
         PROFILER.lock().unwrap().start("./my-prof.profile").unwrap();
 
         for _ in 0..100 {
@@ -495,7 +482,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn test_pure_signal() {
         let s = puresignal::new();
         let c1: fn(()) -> LoopStatus<()> = |_| {
@@ -525,11 +511,10 @@ mod tests {
 
         let p = p1.join(p2.join(p3));
 
-        engine::execute_process(p);
+        engine::execute_process_steps(p, 4, 1000);
     }
 
     #[test]
-    #[ignore]
     fn test_mc_signal() {
         let s = value_signal::new(0, |v1, v2| {
             println!("{} + {} = {}", v1, v2, v1 + v2);
@@ -542,7 +527,8 @@ mod tests {
         };
         let p2 = s.emit(s.await_in().map(print_v)).loop_inf();
         let p = p1.join(p2);
-        engine::execute_process(p);
+
+        engine::execute_process_steps(p, 4, 1000);
     }
 
     #[test]
@@ -562,7 +548,7 @@ mod tests {
         let pre_loop1 = s1.emit(value(TestStruct { content: 0 }));
         let loop1 = move | v: Option<TestStruct> | {
             let mut v = v.unwrap();
-//            println!("Value seen: {}", v.content);
+
             let x = v.content;
             v.content += 1;
             let condition = value(x >= 10);
@@ -574,7 +560,7 @@ mod tests {
 
         let loop2 = move | v: Option<TestStruct> | {
             let mut v = v.unwrap();
-            println!("Value seen: {}", v.content);
+
             let x = v.content;
             v.content += 1;
             let p = {
@@ -618,7 +604,6 @@ mod tests {
         let p1 = sender.emit(value(()).map(increment)).map(loop1).pause().loop_while();
 
         let loop2 = move | v: i32 | {
-            println!("Value seen: {}", v);
             if v >= 19 {
                 LoopStatus::Exit(v)
             } else {
@@ -626,7 +611,6 @@ mod tests {
             }
         };
         let loop3 = move | v: i32 | {
-            println!("Value seen: {}", v);
             if v >= 19 {
                 LoopStatus::Exit(v)
             } else {
