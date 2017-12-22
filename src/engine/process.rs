@@ -449,7 +449,9 @@ impl<P> Process for MultiJoin<P>
                 continuation.call(runtime, value.into_iter().map(|v| { v.unwrap() }).collect());
 
             };
-            p.call(runtime, c);
+            runtime.on_current_instant(Box::new(move |runtime: &mut Runtime, _| {
+                p.call(runtime, c);
+            }));
         };
 
         // Maybe everything has been done so quickly that `join_point_original` is the last reference to the join point structure.
