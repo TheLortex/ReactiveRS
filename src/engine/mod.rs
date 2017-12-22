@@ -229,10 +229,13 @@ use std::sync::{Mutex};
 
 
 pub fn execute_process<P>(process: P) -> P::Value where P:Process, P::Value: Send {
-    execute_process_steps(process, 6, -1)
+    match execute_process_steps(process, 6, -1) {
+        Some(x) => x,
+        None => panic!("Deadlock detected!"),
+    }
 }
 
-pub fn execute_process_steps<P>(process: P, n_workers: usize, max_iters: i32) -> P::Value where P:Process, P::Value: Send {
+pub fn execute_process_steps<P>(process: P, n_workers: usize, max_iters: i32) -> Option<P::Value> where P:Process, P::Value: Send {
     // let mut r = Runtime::new(1);
     let result: Arc<Mutex<Option<P::Value>>> = Arc::new(Mutex::new(None));
     let result2 = result.clone();
@@ -247,11 +250,10 @@ pub fn execute_process_steps<P>(process: P, n_workers: usize, max_iters: i32) ->
 
     r.execute(todo, max_iters);
 
-    let res = match Arc::try_unwrap(result) {
-        Ok(x) => x,
-        _ => panic!("Failed unwrap in execute_process. It may be a Deadlock."),
-    };
-    res.into_inner().unwrap().unwrap()
+    match Arc::try_unwrap(result) {
+        Ok(x) => x.into_inner().unwrap(),
+        _ => None,
+    }
 }
 
 
@@ -377,7 +379,7 @@ mod tests {
         let counter = Arc::new(Mutex::new(0));
         let mut processes = vec!();
 
-        let n = 10000000;
+        let n = 10000;
 
         for _ in 0..n {
             let counter_clone = counter.clone();
@@ -485,18 +487,18 @@ mod tests {
     fn test_pure_signal() {
         let s = puresignal::new();
         let c1: fn(()) -> LoopStatus<()> = |_| {
-            println!("s sent");
+         //   println!("s sent");
             LoopStatus::Continue
         };
         let p1 = s.emit(value(())).pause().pause().pause()
             .map(c1).loop_while();
         let c21 = |_| {
-            println!("present");
+        //    println!("present");
             ()
         };
         let p21 = process::Value::new(()).map(c21).pause();
         let c22 = |_| {
-            println!("not present");
+        //    println!("not present");
             ()
         };
         let p22 = process::Value::new(()).map(c22);
@@ -504,31 +506,31 @@ mod tests {
         let p2 = s.present(p21, p22)
             .map(c2).loop_while();
         let c3: fn(()) -> LoopStatus<()> = |_| {
-            println!("s received");
+        //    println!("s received");
             LoopStatus::Continue
         };
         let p3 = s.await_immediate().map(c3).pause().loop_while();
 
         let p = p1.join(p2.join(p3));
 
-        engine::execute_process_steps(p, 4, 1000);
+        assert_eq!(engine::execute_process_steps(p, 4, 1000), None);
     }
 
     #[test]
     fn test_mc_signal() {
         let s = value_signal::new(0, |v1, v2| {
-            println!("{} + {} = {}", v1, v2, v1 + v2);
+         //   println!("{} + {} = {}", v1, v2, v1 + v2);
             v1 + v2
         });
         let p1 = s.emit(value(1)).pause().loop_inf();
         let print_v = |v| {
-            println!("{}", v);
+         //   println!("{}", v);
             v
         };
         let p2 = s.emit(s.await_in().map(print_v)).loop_inf();
         let p = p1.join(p2);
 
-        engine::execute_process_steps(p, 4, 1000);
+        assert_eq!(engine::execute_process_steps(p, 4, 1000), None);
     }
 
     #[test]
