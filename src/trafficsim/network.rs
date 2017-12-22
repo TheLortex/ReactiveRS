@@ -3,6 +3,8 @@ extern crate rand;
 
 use reactivers::engine::process::*;
 use reactivers::engine::signal::*;
+use reactivers::engine::signal::spmc_signal::*;
+use reactivers::engine::signal::mpsc_signal::*;
 
 
 use rand::Rng;

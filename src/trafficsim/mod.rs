@@ -17,23 +17,25 @@ use std::time::Duration;
 
 pub fn run_simulation(network: Network, cars: Vec<Car>, data: Option<(f64,Arc<Mutex<Option<Vec<Move>>>>)>)
 {
-    let (central_signal, central_sender) = SPMCSignal::new();
-    let (pos_signal, pos_signal_receiver) =
-        MPSCSignal::new(|(id, (action, speed)): (CarId, (Action, Speed)), (mut v, mut s): (Vec<Action>, Vec<Speed>)| {
-            for _ in (v.len())..(id+1) {
-                v.push(Action::VANISH);
-                s.push(0);
-            }
-            v[id] = action;
-            s[id] = speed;
-            (v, s)
-        });
+    let (central_sender, central_receiver) = spmc_signal::new();
+    let (pos_signal_sender, pos_signal_receiver) =
+        mpsc_signal::new(|(id, (action, speed)): (CarId, (Action, Speed)),
+                         (mut v, mut s): (Vec<Action>, Vec<Speed>)|
+            {
+                for _ in (v.len())..(id+1) {
+                    v.push(Action::VANISH);
+                    s.push(0);
+                }
+                v[id] = action;
+                s[id] = speed;
+                (v, s)
+            });
 
     let network_process = network.process(central_sender, pos_signal_receiver);
     let car_processes = cars.into_iter().map(|c| {
         c.process(
-            central_signal.clone(),
-            pos_signal.clone()
+            central_receiver.clone(),
+            pos_signal_sender.clone()
         )
     }).collect();
 
@@ -57,9 +59,9 @@ pub fn run_simulation(network: Network, cars: Vec<Car>, data: Option<(f64,Arc<Mu
         step += 1;
         thread::sleep(Duration::from_millis((duration * 1000.) as u64));
     };
-    let q1 = central_signal.await_in().map(gui_c).pause().loop_inf();
+    let q1 = central_receiver.await_in().map(gui_c).pause().loop_inf();
     let q2 = value(());
     let gui_p = value(gui_bool).then_else(q1, q2);
 
-    engine::execute_process(gui_p.join(process), 8, -1);
+    engine::execute_process_steps(gui_p.join(process), 8, -1);
 }
