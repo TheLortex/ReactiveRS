@@ -8,37 +8,48 @@ extern crate itertools;
 use self::continuation::Continuation;
 use self::process::Process;
 
-/// TODO: Check if legal to use (compare with proposed method)
 use self::coco::deque::{self, Worker, Stealer};
 
 use std::sync::{Arc, Barrier};
 use std::sync::atomic::{AtomicIsize, Ordering};
 use std::thread;
+use std::mem;
 
 type JobStealer = Stealer<Box<Continuation<()>>>;
 
+/// Parallel runtime structure
 pub struct ParallelRuntime {
+    /// Shared data between workers
     shared_data: Arc<SharedData>,
+    /// List of workers
     runtimes: Vec<Runtime>,
 }
 
+/// Shared data structure
 pub struct SharedData {
+    /// Stealing end of the work-stealing queue for each worker.
     runtimes_jobs: Vec<JobStealer>,
+    /// Number of workers that are currently working in the instant.
     n_local_working: AtomicIsize,
+    /// Number of workers that, at end of instant, will have work to do on next instant.
     n_global_working: AtomicIsize,
+     /// Synchronization barrier between workers.
     sync_barrier: Barrier,
 }
 
 impl ParallelRuntime {
+    /// Creates a new `ParallelRuntime` by creating `n_workers` workers.
     pub fn new(n_workers: usize) -> Self {
-        // Create dequeue for jobs.
+        // Create work stealing queue for jobs.
+        // The worker end can push and pop.
+        // The stealer end can steal.
         let (mut worker_job_cur_instant, stealer_job_cur_instant): (Vec<_>, Vec<_>) =
             (0..n_workers).map(|_| deque::new()).unzip();
 
         // Shared data structure between workers.
         let shared_data = SharedData {
             runtimes_jobs: stealer_job_cur_instant,
-            n_local_working: AtomicIsize::new(0),
+            n_local_working: AtomicIsize::new(n_workers as isize),
             n_global_working: AtomicIsize::new(0),
             sync_barrier: Barrier::new(n_workers),
         };
@@ -51,7 +62,6 @@ impl ParallelRuntime {
 
         // Creation of workers.
         while let Some(cur_instant_worker) = worker_job_cur_instant.pop() {
-            // spawn threads.
             let mut runtime = Runtime::new(r.shared_data.clone(), cur_instant_worker);
             r.runtimes.push(runtime);
         };
@@ -59,7 +69,11 @@ impl ParallelRuntime {
         r
     }
 
+    /// Start the runtime with a given job.
+    /// `max_iters` is the maximum number of iterations that should be done. If it's -1 then there's
+    /// no limit.
     pub fn execute(&mut self, job: Box<Continuation<()>>, max_iters: i32) {
+        // Give the job to an arbitrarily chosen worker.
         self.runtimes[0].on_current_instant(job);
 
         let mut join_handles = vec!();
@@ -87,12 +101,18 @@ impl ParallelRuntime {
 
 /// Runtime for executing reactive continuations.
 pub struct Runtime {
+    /// Continuations that have to be done on current instant.
+    /// Worker end of the work stealing queue, as the runtime can be part of a parallel runtime.
     cur_instant:    Worker<Box<Continuation<()>>>,
+    /// Continuations that have to be done on next instant.
     next_instant:   Vec<Box<Continuation<()>>>,
+    /// Continuations that have to be done on end of instant.
     end_of_instant: Vec<Box<Continuation<()>>>,
+    /// Pointer to the shared data between workers.
     manager:        Arc<SharedData>,
 }
 
+use std::time;
 
 impl Runtime {
     /// Creates a new `Runtime`.
@@ -106,75 +126,77 @@ impl Runtime {
         }
     }
 
+    /// Worker loop that executes at most `max_iter` instants.
+    /// If `max_iter` is -1 there is no limit.
     pub fn work(&mut self, max_iter: i32) {
         let mut n_iter = 0;
 
         loop {
+            // Execution count check.
             n_iter += 1;
             if max_iter != -1 && n_iter > max_iter {
                 break;
             }
 
             // Step 1.
-
-            /// Do all the local work.
-            self.manager.n_local_working.fetch_add(1, Ordering::Relaxed);
+            // Do all the local work.
             while let Some(c) = self.cur_instant.pop() {
                 c.call_box(self, ());
             }
+            // Decrement the number of working threads when work is done.
             self.manager.n_local_working.fetch_add(-1, Ordering::Relaxed);
 
-            /// While someone is working (and might add something on his queue)
+            // While someone is working (and might add something on his queue)
             while self.manager.n_local_working.load(Ordering::Relaxed) > 0 {
                 let mut stolen = false;
 
-                /// Try to steal work and unroll all local work then.
+                // Try to steal work and unroll all local work then.
                 while let Some(c) = self.manager.runtimes_jobs.iter().filter_map(|job| {
                     job.steal()
                 }).next() {
                     stolen = true;
                     self.manager.n_local_working.fetch_add(1, Ordering::Relaxed);
                     c.call_box(self, ());
-
                     while let Some(c) = self.cur_instant.pop() {
                         c.call_box(self, ());
                     }
                     self.manager.n_local_working.fetch_add(-1, Ordering::Relaxed);
                 }
 
+                // Nothing was stolen but someone is still working, try to steal later on.
                 if !stolen {
-                    thread::sleep_ms(5);
+                    thread::sleep(time::Duration::from_millis(10));
                 }
             }
 
+            // Synchronization barrier, and reset global working threads counter.
             if self.manager.sync_barrier.wait().is_leader() {
                 self.manager.n_global_working.store(0, Ordering::Relaxed);
             }
 
             // Step 2.
             let mut end_of_instant = vec!();
-            while let Some(c) = self.end_of_instant.pop() {
-                end_of_instant.push(c)
-            }
+            mem::swap(&mut self.end_of_instant, &mut end_of_instant);
 
             while let Some(c) = self.next_instant.pop() {
                 self.cur_instant.push(c);
             }
-
-            self.manager.sync_barrier.wait();
 
             // Do all the local work.
             while let Some(c) = end_of_instant.pop() {
                 c.call_box(self, ());
             }
 
+            self.manager.sync_barrier.wait();
+
+            // Check if the worker will have work to do later;
             let local_work_to_do = self.end_of_instant.len() > 0 || self.next_instant.len() > 0 || self.cur_instant.len() > 0;
 
             // Here n_global_working should be equal to zero.
             if local_work_to_do {
                 self.manager.n_global_working.fetch_add(1, Ordering::Relaxed);
             }
-
+            self.manager.n_local_working.fetch_add(1, Ordering::Relaxed);
             self.manager.sync_barrier.wait();
 
             let work_to_do = self.manager.n_global_working.load(Ordering::Relaxed) > 0;
@@ -203,7 +225,6 @@ impl Runtime {
     }
 }
 
-use std::cell::Cell;
 use std::sync::{Mutex};
 
 pub fn execute_process<P>(process: P, n_workers: usize, max_iters: i32) -> P::Value where P:Process, P::Value: Send {
@@ -214,7 +235,7 @@ pub fn execute_process<P>(process: P, n_workers: usize, max_iters: i32) -> P::Va
     let mut r = ParallelRuntime::new(n_workers);
 
     let todo = Box::new(move |mut runtime: &mut Runtime, ()| {
-        process.call(&mut runtime, move|runtime: &mut Runtime, value: P::Value| {
+        process.call(&mut runtime, move |_: &mut Runtime, value: P::Value| {
             *result2.lock().unwrap() = Some(value);
         });
     });
