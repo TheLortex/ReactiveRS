@@ -19,7 +19,8 @@ directory:
 in `target/debug/doc/reactivers/` folder.
 
 The library has already been generated and is directly
-available in `doc/` folder.
+available in `doc/` folder. It can be opened by opening
+`index.html` with a browser.
 
 Only the parallel implementation is given.
 The addition of many `Mutex` and synchronization points
