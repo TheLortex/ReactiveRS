@@ -261,10 +261,7 @@ pub fn execute_process_steps<P>(process: P, n_workers: usize, max_iters: i32) ->
 #[cfg(test)]
 mod tests {
     extern crate test;
-    extern crate cpuprofiler;
     extern crate coco;
-
-    use self::cpuprofiler::PROFILER;
 
     use engine::process::{Process, value, LoopStatus, ProcessMut, multi_join};
     use engine::process;
@@ -277,7 +274,6 @@ mod tests {
     use engine::SharedData;
     use self::coco::deque;
     use std::sync::{Arc, Mutex};
-    use self::test::Bencher;
 
     #[test]
     fn test_continuation_pause() {
@@ -447,8 +443,6 @@ mod tests {
         assert_eq!((Some(42), None), engine::execute_process(faster.join(slower)));
     }
 
-    use std::thread;
-
     #[test]
     fn test_multijoin() {
         let counter = Arc::new(Mutex::new(0));
@@ -527,7 +521,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn test_while_perf() {
         let mut x = 1000;
         let c = move |_| {
@@ -540,25 +533,6 @@ mod tests {
         };
         let p = process::Value::new(()).map(c);
         assert_eq!(42, engine::execute_process(p.pause().loop_while()));
-    }
-
-    #[bench]
-    #[ignore]
-    fn bench_while_perf(b: &mut Bencher) {
-        b.iter(|| test_while_perf());
-    }
-
-    #[test]
-    #[ignore]
-    fn profile_while_perf() {
-        // TODO: Check profiler
-        PROFILER.lock().unwrap().start("./my-prof.profile").unwrap();
-
-        for _ in 0..100 {
-            test_while_perf();
-        }
-
-        PROFILER.lock().unwrap().stop().unwrap();
     }
 
     #[test]
