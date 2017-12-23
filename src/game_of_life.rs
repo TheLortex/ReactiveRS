@@ -25,7 +25,7 @@ pub fn game_of_life () {
     let (mut x, mut y) = (0, 0);
     ncurses::getmaxyx(ncurses::stdscr(), &mut y, &mut x);
 
-    let (n, m) = (cmp::min(60, n-4), cmp::min(30, n-2));
+    let (n, m) = (cmp::min(60, x as usize - 4), cmp::min(30, y as usize - 2));
 
     let watcher = gameoflife::watcher::TerminalWatcher::new(60, 30);
 
@@ -39,7 +39,8 @@ pub fn game_of_life () {
     }
 
     let (mut ofs_y, mut ofs_x, mut win) = watcher.render_grid(gameoflife::grid_to_data(&starting_grid));
-    ncurses::mvprintw(0, y/2 - 3, "Game of life");
+    ncurses::mvprintw(ofs_y, x/2 - 6, "Game of life");
+    ncurses::mvprintw(ofs_y  + (m as i32) + 2, x / - 39, "q: Quit | r: Randomize | Click to toggle cells | Enter: start the simulation");
 
     keypad(win , true);
     mousemask((ncurses::BUTTON1_PRESSED  | ncurses::REPORT_MOUSE_POSITION) as u64, None);
