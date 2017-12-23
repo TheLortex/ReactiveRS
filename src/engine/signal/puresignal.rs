@@ -25,7 +25,7 @@ impl ValueRuntime for PureSignalValueRuntime {
     }
 
     fn release_await_in(&self, _runtime: &mut Runtime) {
-        unreachable!()
+        return;
     }
 
     fn get(&self) -> Self::V2 {
