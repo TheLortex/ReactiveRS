@@ -1,31 +1,33 @@
 use super::Runtime;
 use super::continuation::Continuation;
-use std::cell::Cell;
-use std::rc::Rc;
-
+use std::sync::{Arc, Mutex};
+use super::signal::*;
+use super::signal::signal_runtime::ValueRuntime;
+use std::thread;
 
 /// A reactive process.
-pub trait Process: 'static {
+pub trait Process: 'static + Send {
     /// The value created by the process.
     type Value;
 
     /// Executes the reactive process in the runtime, calls `next` with the resulting value.
     fn call<C>(self, runtime: &mut Runtime, next: C) where C: Continuation<Self::Value>;
 
-    fn pause(self) -> Pause<Self> where Self: Sized {
+    /// Creates a new process that waits an instant before returning the value of the process.
+    fn pause(self) -> Pause<Self> where Self: Sized, Self::Value: Send {
         Pause {process: self}
     }
 
-    /// Creates a new process that applies a function to the output value of `Self`.
+    /// Creates a new process that applies a function to the output value of `self`.
     fn map<F, V2>(self, map: F) -> Map<Self, F>
-        where Self: Sized, F: FnOnce(Self::Value) -> V2 + 'static
+        where Self: Sized, F: FnOnce(Self::Value) -> V2 + 'static + Send
     {
         Map { process: self, map }
     }
 
-    /// Creates a new process that executes the process returned by `Self`.
-    fn flatten(self) -> Flatten<Self>
-        where Self: Sized, Self::Value: Process {
+    /// Creates a new process that executes the process returned by `self`.
+    fn flatten<>(self) -> Flatten<Self>
+        where Self: Sized, Self::Value: Process + Send {
         Flatten { process: self }
     }
 
@@ -33,7 +35,7 @@ pub trait Process: 'static {
     /// Creates a new process that executes the first process, applies the given function to the
     /// result, and executes the returned process.
     fn and_then<F, P>(self, function: F) -> AndThen<Self, F>
-        where F: FnOnce(Self::Value) -> P + 'static, Self: Sized, P: Process {
+        where F: FnOnce(Self::Value) -> P + 'static + Send, Self: Sized, P: Process {
         self.map(function).flatten()
     }
 
@@ -46,15 +48,38 @@ pub trait Process: 'static {
 
     /// Creates a new process that executes the two processes in parallel, and returns the couple of
     /// their return values.
-    fn join<P>(self, process: P) -> Join<Self, P> where Self: Sized, P: Sized {
+    fn join<P>(self, process: P) -> Join<Self, P> where Self: Sized, P: Process + Sized {
         Join {process1: self, process2: process}
     }
 
-    /// Creates a new process that executes process `q1` if the result of `Self` is true, and `q2`
+    /// Creates a new process that executes `self` and all the processes contained in `ps` in
+    /// parallel, and returns a pair of values (`Self::Value`, `Vec<P::Value>`).
+    fn multi_join<P>(self, ps: Vec<P>) -> Join<Self, MultiJoin<P>>
+        where Self: Sized, P: Process + Sized, P::Value: Send {
+        self.join(MultiJoin { ps })
+    }
+
+    /// Creates a new process that executes process `q1` if the result of `self` is true, and `q2`
     /// otherwise.
     fn then_else<Q1, Q2>(self, q1: Q1, q2: Q2) -> ThenElse<Self, Q1, Q2>
         where Self: Process<Value=bool> + Sized, Q1: Process, Q2: Process<Value=Q1::Value> {
         ThenElse { condition: self, q1, q2}
+    }
+
+    /// Creates a new process that emits the value returned by `self` on the signal `s`, without
+    /// consuming `s`.
+    fn emit<S>(self, s: &S) -> Emit<S, Self>
+        where S: SEmit + Sized, Self: Sized, Self: Process<Value=<S::VR as ValueRuntime>::V1>
+    {
+        s.emit(self)
+    }
+
+    /// Creates a new process that emits the value returned by `self` on the signal `s`, and
+    /// consumes `s`.
+    fn emit_consume<S>(self, s: S) -> Emit<S, Self>
+        where S: SEmitConsume + Sized, Self: Sized, Self: Process<Value=<S::VR as ValueRuntime>::V1>
+    {
+        s.emit(self)
     }
 }
 
@@ -89,21 +114,24 @@ pub trait ProcessMut: Process {
 }
 
 
+/// A basic process that returns a fixed value.
 pub struct Value<V> {
     value: V,
 }
 
-impl<V> Value<V> where V: 'static {
+impl<V> Value<V> where V: 'static + Send {
+    /// Creates a new process that returns the value `v`.
     pub fn new(v: V) -> Self {
         Value {value: v}
     }
 }
 
+/// Creates a process that returns the value `v`.
 pub fn value<V>(v: V) -> Value<V> where V: 'static {
     Value { value: v }
 }
 
-impl<V> Process for Value<V> where V: 'static {
+impl<V> Process for Value<V> where V: 'static + Send {
     type Value = V;
 
     fn call<C>(self, runtime: &mut Runtime, next: C) where C: Continuation<Self::Value> {
@@ -111,7 +139,7 @@ impl<V> Process for Value<V> where V: 'static {
     }
 }
 
-impl<V> ProcessMut for Value<V> where V: Copy + 'static {
+impl<V> ProcessMut for Value<V> where V: Copy + 'static + Send {
     fn call_mut<C>(self, runtime: &mut Runtime, next: C)
         where Self: Sized, C: Continuation<(Self, Self::Value)> {
         let v = self.value;
@@ -120,11 +148,12 @@ impl<V> ProcessMut for Value<V> where V: Copy + 'static {
 }
 
 
+/// A process that waits an instant before returning the value of process.
 pub struct Pause<P> {
     process: P,
 }
 
-impl<P> Process for Pause<P> where P: Process {
+impl<P> Process for Pause<P> where P: Process, P::Value: Send {
     type Value = P::Value;
 
     fn call<C>(self, runtime: &mut Runtime, next: C) where C: Continuation<Self::Value> {
@@ -135,7 +164,7 @@ impl<P> Process for Pause<P> where P: Process {
     }
 }
 
-impl<P> ProcessMut for Pause<P> where P: ProcessMut {
+impl<P> ProcessMut for Pause<P> where P: ProcessMut, P::Value: Send {
     fn call_mut<C>(self, runtime: &mut Runtime, next: C)
         where Self: Sized, C: Continuation<(Self, Self::Value)> {
 //        self.process.call_mut(runtime,
@@ -156,7 +185,7 @@ pub struct Map<P, F> {
 }
 
 impl<P, F, V2> Process for Map<P, F>
-    where P: Process, F: FnOnce(P::Value) -> V2 + 'static
+    where P: Process, F: FnOnce(P::Value) -> V2 + 'static + Send
 {
     type Value = V2;
 
@@ -170,7 +199,7 @@ impl<P, F, V2> Process for Map<P, F>
 }
 
 impl<P, F, V2> ProcessMut for Map<P, F>
-    where P: ProcessMut, F: FnMut(P::Value) -> V2 + 'static
+    where P: ProcessMut, F: FnMut(P::Value) -> V2 + 'static + Send
 {
     fn call_mut<C>(self, runtime: &mut Runtime, next: C)
         where Self: Sized, C: Continuation<(Self, Self::Value)>
@@ -235,7 +264,7 @@ impl <P, Q> Process for Then<P, Q>
 
         let p2 = self.process2;
 
-        let c = move |runtime: &mut Runtime, v1: P::Value| {
+        let c = move |runtime: &mut Runtime, _: P::Value| {
             p2.call(runtime, next);
         };
 
@@ -253,7 +282,7 @@ impl<P, Q> ProcessMut for Then<P, Q>
         let p2 = self.process2;
 
         let c = move |runtime: &mut Runtime, v: (P, P::Value)| {
-            let (p1, v1) = v;
+            let (p1, _) = v;
 
             let c2 = next.map(move |v: (Q, Q::Value)| {
                 let (p2, v2) = v;
@@ -273,48 +302,80 @@ pub struct Join<P, Q> {
     process2: Q,
 }
 
-pub struct JoinPoint<V1, V2, C> where C: Continuation<(V1, V2)> {
-    v1: Cell<Option<V1>>,
-    v2: Cell<Option<V2>>,
-    continuation: Cell<Option<C>>,
+/// Structure used to join two processes.
+struct JoinPoint<V1, V2, C> where C: Continuation<(V1, V2)>, V1: Send, V2: Send {
+    v1: Mutex<Option<V1>>,
+    v2: Mutex<Option<V2>>,
+    continuation: Mutex<Option<C>>,
 }
 
+/// Parallel execution of two processes.
 impl<P, Q> Process for Join<P, Q>
-    where P: Process, Q: Process
+    where P: Process, Q: Process, P::Value: Send, Q::Value: Send
 {
     type Value = (P::Value, Q::Value);
 
     fn call<C>(self, runtime: &mut Runtime, next: C) where C: Continuation<Self::Value>, C: Sized {
-        let join_point = Rc::new(JoinPoint {
-            v1: Cell::new(None), v2: Cell::new(None), continuation: Cell::new(Some(next)),
+        let join_point = Arc::new(JoinPoint {
+            v1: Mutex::new(None), v2: Mutex::new(None), continuation: Mutex::new(Some(next)),
         });
         let join_point2 = join_point.clone();
         let c1 = move |runtime: &mut Runtime, v1: P::Value| {
-            let v2 = join_point.v2.take();
-
-            if let Some(v2) = v2 {
-                join_point.continuation.take().unwrap().call(runtime, (v1, v2));
+            let ok;
+            {
+                let v2 = join_point.v2.lock().unwrap();
+                if let Some(_) = *v2 {
+                    ok = true;
+                }
+                else {
+                    ok = false;
+                }
             }
-            else {
-                join_point.v1.set(Some(v1));
+
+            if ok {
+                let join_point = match Arc::try_unwrap(join_point) {
+                    Ok(val) => val,
+                    _ => unreachable!("Process join failed"),
+                };
+
+                let val = join_point.v2.into_inner().unwrap().unwrap();
+                let continuation = join_point.continuation.into_inner().unwrap().unwrap();
+                continuation.call(runtime, (v1, val));
+            } else {
+                *join_point.v1.lock().unwrap() = Some(v1);
             }
         };
         let c2 = move |runtime: &mut Runtime, v2: Q::Value| {
-            let v1 = join_point2.v1.take();
-
-            if let Some(v1) = v1 {
-                join_point2.continuation.take().unwrap().call(runtime, (v1, v2));
-            }
-                else {
-                    join_point2.v2.set(Some(v2));
+            let ok;
+            {
+                let v1 = join_point2.v1.lock().unwrap();
+                if let Some(_) = *v1 {
+                    ok = true;
+                } else {
+                    ok = false;
                 }
+            }
+
+            if ok {
+                let join_point2 = match Arc::try_unwrap(join_point2) {
+                    Ok(val) => val,
+                    _ => unreachable!("Process join failed."),
+                };
+
+                let val = join_point2.v1.into_inner().unwrap().unwrap();
+                let continuation = join_point2.continuation.into_inner().unwrap().unwrap();
+                continuation.call(runtime, (val, v2));
+            } else {
+                *join_point2.v2.lock().unwrap() = Some(v2);
+            }
         };
         self.process1.call(runtime, c1);
         self.process2.call(runtime, c2);
     }
 }
 
-impl<P, Q> ProcessMut for Join<P, Q> where P: ProcessMut, Q:ProcessMut {
+impl<P, Q> ProcessMut for Join<P, Q>
+    where P: ProcessMut, Q: ProcessMut, P::Value: Send, Q::Value: Send {
     fn call_mut<C>(self, runtime: &mut Runtime, next: C)
         where Self: Sized, C: Continuation<(Self, Self::Value)>
     {
@@ -322,6 +383,141 @@ impl<P, Q> ProcessMut for Join<P, Q> where P: ProcessMut, Q:ProcessMut {
             .map(|((p1, v1), (p2, v2))| {
                 (p1.join(p2), (v1, v2))
             }).call(runtime, next);
+    }
+}
+
+/// A process that executes many processes in parallel, and returns a vector of values.
+pub struct MultiJoin<P> {
+    ps: Vec<P>,
+}
+
+/// Structure used to join a vector of processes.
+struct MultiJoinPoint<V, C> where C: Continuation<Vec<V>> {
+    remaining: Mutex<usize>,
+    value: Mutex<Vec<Option<V>>>,
+    continuation: Mutex<Option<C>>,
+}
+
+/// Creates a process that executes the processes contained in `ps` in parallel, and returns the
+/// vector of their values.
+pub fn multi_join<P>(ps: Vec<P>) -> MultiJoin<P> {
+    MultiJoin { ps }
+}
+
+use std::time;
+
+/// Parallel execution of a list of processes.
+impl<P> Process for MultiJoin<P>
+    where P: Process, P::Value: Send
+{
+    type Value = Vec<P::Value>;
+
+    /// Launch execution of processes, then calling the `next` continuation when every process has finished.
+    fn call<C>(self, runtime: &mut Runtime, next: C) where C: Continuation<Self::Value>, C: Sized {
+        // Shared data structure containing worker data.
+        let join_point_original = Arc::new(MultiJoinPoint {
+            remaining: Mutex::new(self.ps.len()+1),
+            value: Mutex::new((0..self.ps.len()).map(|_| { None }).collect()),
+            continuation: Mutex::new(Some(next)),
+        });
+
+        // List processes to run.
+        for (i, p) in self.ps.into_iter().enumerate() {
+            // Clone shared data pointer.
+            let join_point = join_point_original.clone();
+            // Create end of process continuation.
+            let c = move |runtime: &mut Runtime, v: P::Value| {
+                // Check if someone is still working.
+                let ok;
+                {
+                    let mut remaining = join_point.remaining.lock().unwrap();
+                    if *remaining == 1 {
+                        ok = true;
+                    } else {
+                        ok = false;
+                    }
+                    *remaining -= 1;
+
+                    if !ok { // Free the reference as soon as possible.
+                        (*join_point.value.lock().unwrap())[i] = Some(v);
+                        return;
+                    }
+                }
+                // Here this is executed when the last process has finished.
+
+                // Wait for remaining references to be free.
+                while Arc::strong_count(&join_point) > 1 {
+                    thread::sleep(time::Duration::from_micros(1));
+                }
+
+                // Get ownership of `join_point`.
+                let join_point = match Arc::try_unwrap(join_point) {
+                    Ok(val) => val,
+                    _ => unreachable!("Process join failed."),
+                };
+
+                // Get ownership of processes values and next continuation.
+                let mut value = join_point.value.into_inner().unwrap();
+                let continuation = join_point.continuation.into_inner().unwrap().unwrap();
+                value[i] = Some(v);
+
+                // Call next continuation.
+                continuation.call(runtime, value.into_iter().map(|v| { v.unwrap() }).collect());
+
+            };
+            runtime.on_current_instant(Box::new(move |runtime: &mut Runtime, _| {
+                p.call(runtime, c);
+            }));
+        };
+
+        // Maybe everything has been done so quickly that `join_point_original` is the last reference to the join point structure.
+        // Then we have to do the same work as before by getting ownership of the data and callling the next continuation.
+
+        let ok;
+        {
+            let mut remaining = join_point_original.remaining.lock().unwrap();
+            if *remaining == 1 {
+                ok = true;
+            } else {
+                ok = false;
+            }
+            *remaining -= 1;
+        }
+
+        if ok {
+            // Wait for remaining references to be free.
+            while Arc::strong_count(&join_point_original) > 1 {
+                thread::sleep(time::Duration::from_micros(1));
+            }
+
+
+            let join_point_original = match Arc::try_unwrap(join_point_original) {
+                Ok(val) => val,
+                _ => unreachable! ("Process join failed."),
+            };
+
+            let value = join_point_original.value.into_inner().unwrap();
+            let continuation = join_point_original.continuation.into_inner().unwrap().unwrap();
+            continuation.call(runtime, value.into_iter().map(| v | { v.unwrap() }).collect());
+        }
+    }
+}
+
+impl<P> ProcessMut for MultiJoin<P>
+    where P: ProcessMut, P::Value: Send {
+    fn call_mut<C>(self, runtime: &mut Runtime, next: C)
+        where Self: Sized, C: Continuation<(Self, Self::Value)> + Sized
+    {
+        let ps_mut: Vec<Mut<P>> = self.ps.into_iter().map(|p| { p.get_mut() }).collect();
+        (MultiJoin { ps: ps_mut }).map(|v: Vec<(P, P::Value)>| {
+            let mut ps = vec!();
+            let mut res = vec!();
+            for (p, value) in v {
+                ps.push(p);
+                res.push(value);
+            }
+            (MultiJoin { ps }, res)
+        }).call(runtime, next);
     }
 }
 
@@ -385,10 +581,15 @@ impl<P> Process for Mut<P> where P: ProcessMut {
 
 
 /// Indicates if a loop is finished.
+#[derive(Clone)]
 pub enum LoopStatus<V> {
     Continue, Exit(V)
 }
 
+impl<V> Copy for LoopStatus<V> where V: Copy {}
+
+
+/// A process that build a while loop around a `ProcessMut` with return type `LoopStatus`.
 pub struct While<P> {
     process: P,
 }

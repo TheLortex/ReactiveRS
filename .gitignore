@@ -1,4 +1,6 @@
 .idea/
 target/
 Cargo.lock
-
+*.iml
+*.profile
+doc/*

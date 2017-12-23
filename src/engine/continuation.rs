@@ -2,7 +2,7 @@ use super::Runtime;
 
 /// A reactive continuation awaiting a value of type `V`. For the sake of simplicity,
 /// continuation must be valid on the static lifetime.
-pub trait Continuation<V>: 'static {
+pub trait Continuation<V>: 'static + Send {
     /// Calls the continuation.
     fn call(self, runtime: &mut Runtime, value: V);
 
@@ -26,7 +26,7 @@ pub trait Continuation<V>: 'static {
 }
 
 
-impl<V, F> Continuation<V> for F where F: FnOnce(&mut Runtime, V) + 'static {
+impl<V, F> Continuation<V> for F where F: FnOnce(&mut Runtime, V) + 'static + Send {
     fn call(self, runtime: &mut Runtime, value: V)  {
         self(runtime, value);
     }
@@ -44,7 +44,7 @@ pub struct Map<C, F> {
 }
 
 impl<C, F, V1, V2> Continuation<V1> for Map<C, F>
-    where C: Continuation<V2>, F: FnOnce(V1) -> V2 + 'static
+    where C: Continuation<V2>, F: FnOnce(V1) -> V2 + 'static + Send
 {
     fn call(self, runtime: &mut Runtime, value: V1)  {
         let v = (self.map)(value);
@@ -64,7 +64,7 @@ pub struct Pause<C> {
 
 
 impl<C, V> Continuation<V> for Pause<C>
-    where C: Continuation<V> + 'static, V: 'static
+    where C: Continuation<V> + 'static + Send, V: 'static + Send
 {
     fn call(self, runtime: &mut Runtime, value: V)  {
         runtime.on_next_instant(Box::new(move |r: &mut Runtime, ()| {
