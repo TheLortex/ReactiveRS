@@ -165,7 +165,7 @@ impl Runtime {
 
                 // Nothing was stolen but someone is still working, try to steal later on.
                 if !stolen {
-                    thread::sleep(time::Duration::from_millis(10));
+                    thread::sleep(time::Duration::from_micros(1));
                 }
             }
 

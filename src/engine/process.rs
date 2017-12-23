@@ -431,7 +431,7 @@ impl<P> Process for MultiJoin<P>
 
                 // Wait for remaining references to be free.
                 while Arc::strong_count(&join_point) > 1 {
-                    thread::sleep(time::Duration::from_millis(10));
+                    thread::sleep(time::Duration::from_micros(1));
                 }
 
                 // Get ownership of `join_point`.
@@ -471,7 +471,7 @@ impl<P> Process for MultiJoin<P>
         if ok {
             // Wait for remaining references to be free.
             while Arc::strong_count(&join_point_original) > 1 {
-                thread::sleep(time::Duration::from_millis(10));
+                thread::sleep(time::Duration::from_micros(1));
             }
 
 
