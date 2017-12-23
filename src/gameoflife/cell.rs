@@ -44,12 +44,12 @@ impl GameCell {
             value(()).emit(signal)
         }).collect_vec();
 
-        let mut send_status_alive = value((x, y)).emit(&status_signal);
-        let mut send_status_alive2 = value((x, y)).emit(&status_signal);
+        let send_status_alive = value((x, y)).emit(&status_signal);
+        let send_status_alive2 = value((x, y)).emit(&status_signal);
 
         let status_is_alive = self.status_is_alive;
 
-        let mut update_cell = move |alive_neighbor_count: i32| {
+        let update_cell = move |alive_neighbor_count: i32| {
             self.update(alive_neighbor_count)
         };
 

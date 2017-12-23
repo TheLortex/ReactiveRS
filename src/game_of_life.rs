@@ -9,19 +9,14 @@ mod gameoflife;
 
 
 use self::rand::distributions::IndependentSample;
-use std::thread;
 use ncurses::*;
 
-use std::char;
 
 pub fn game_of_life () {
-
     initscr();
 
     keypad(stdscr(), false);
     noecho();
-
-
 
     ncurses::timeout(10);
     ncurses::getch();

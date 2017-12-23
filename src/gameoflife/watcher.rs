@@ -1,16 +1,9 @@
 extern crate reactivers;
-extern crate itertools;
 extern crate ncurses;
 
 use reactivers::engine::process::*;
 use reactivers::engine::signal::mpsc_signal::MPSCSignalReceiver;
 use reactivers::engine::signal::*;
-
-use self::itertools::Itertools;
-use std::thread;
-
-use std::io;
-use std::io::Write;
 
 pub struct TerminalWatcher {
     auto: bool,
@@ -55,7 +48,7 @@ impl TerminalWatcher {
             ncurses::timeout(-1);
         }
 
-        let mut show_and_sleep_cont = move |data: Vec<(bool, usize, usize)>| {
+        let show_and_sleep_cont = move |data: Vec<(bool, usize, usize)>| {
             self.render_grid(data);
 
             let chr = ncurses::getch();
