@@ -1,6 +1,5 @@
 extern crate reactivers;
 extern crate itertools;
-extern crate cpuprofiler;
 
 use reactivers::engine::signal::*;
 use reactivers::engine::signal::value_signal::ValueSignal;
