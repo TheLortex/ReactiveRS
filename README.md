@@ -6,6 +6,9 @@ All the sources can be found in `src/` folder.
 This package contains the reactive library in `src/engine` folder,
 and 2 applications using the library.
 
+The github repository can be found
+[here](https://github.com/TheLortex/ReactiveRS).
+
 ## `reactivers`
 This library implements basic constructions of Reactive ML.
 It does not requires additional installs (except for
