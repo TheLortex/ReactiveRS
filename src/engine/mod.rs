@@ -227,7 +227,7 @@ impl Runtime {
 
 use std::sync::{Mutex};
 
-
+/// Executes `process` in parallel runtime.
 pub fn execute_process<P>(process: P) -> P::Value where P:Process, P::Value: Send {
     match execute_process_steps(process, 6, -1) {
         Some(x) => x,
@@ -235,6 +235,7 @@ pub fn execute_process<P>(process: P) -> P::Value where P:Process, P::Value: Sen
     }
 }
 
+/// Executes `max_iters` steps of `process` on `n_workers` in a parallel runtime.
 pub fn execute_process_steps<P>(process: P, n_workers: usize, max_iters: i32) -> Option<P::Value> where P:Process, P::Value: Send {
     // let mut r = Runtime::new(1);
     let result: Arc<Mutex<Option<P::Value>>> = Arc::new(Mutex::new(None));

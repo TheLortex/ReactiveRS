@@ -1,3 +1,4 @@
+//! A module for Multiple Consumer, Single Producer signals.
 use super::*;
 use std::sync::Mutex;
 
@@ -100,6 +101,7 @@ impl<V1, V2> SAwaitInConsume for MPSCSignalReceiver<V1, V2>
     where V1: 'static + Send + Sync, V2: 'static + Default + Send + Sync {}
 
 
+/// Creates a new MPSC Signal. Returns Sender and Receiver parts.
 pub fn new<V1, V2, F>(gather: F) -> (MPSCSignalSender<V1, V2>, MPSCSignalReceiver<V1, V2>)
     where V1: 'static + Send + Sync, V2: Default + Send + Sync,
           F: Fn(V1, V2) -> V2 + 'static, F: Send + Sync

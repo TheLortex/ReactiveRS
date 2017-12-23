@@ -2,7 +2,7 @@ use super::Runtime;
 use super::continuation::Continuation;
 use std::sync::{Arc, Mutex};
 use super::signal::*;
-use super::signal::signal_runtime::*;
+use super::signal::signal_runtime::ValueRuntime;
 use std::thread;
 
 /// A reactive process.
@@ -13,18 +13,19 @@ pub trait Process: 'static + Send {
     /// Executes the reactive process in the runtime, calls `next` with the resulting value.
     fn call<C>(self, runtime: &mut Runtime, next: C) where C: Continuation<Self::Value>;
 
+    /// Creates a new process that waits an instant before returning the value of the process.
     fn pause(self) -> Pause<Self> where Self: Sized, Self::Value: Send {
         Pause {process: self}
     }
 
-    /// Creates a new process that applies a function to the output value of `Self`.
+    /// Creates a new process that applies a function to the output value of `self`.
     fn map<F, V2>(self, map: F) -> Map<Self, F>
         where Self: Sized, F: FnOnce(Self::Value) -> V2 + 'static + Send
     {
         Map { process: self, map }
     }
 
-    /// Creates a new process that executes the process returned by `Self`.
+    /// Creates a new process that executes the process returned by `self`.
     fn flatten<>(self) -> Flatten<Self>
         where Self: Sized, Self::Value: Process + Send {
         Flatten { process: self }
@@ -51,24 +52,30 @@ pub trait Process: 'static + Send {
         Join {process1: self, process2: process}
     }
 
+    /// Creates a new process that executes `self` and all the processes contained in `ps` in
+    /// parallel, and returns a pair of values (`Self::Value`, `Vec<P::Value>`).
     fn multi_join<P>(self, ps: Vec<P>) -> Join<Self, MultiJoin<P>>
         where Self: Sized, P: Process + Sized, P::Value: Send {
         self.join(MultiJoin { ps })
     }
 
-    /// Creates a new process that executes process `q1` if the result of `Self` is true, and `q2`
+    /// Creates a new process that executes process `q1` if the result of `self` is true, and `q2`
     /// otherwise.
     fn then_else<Q1, Q2>(self, q1: Q1, q2: Q2) -> ThenElse<Self, Q1, Q2>
         where Self: Process<Value=bool> + Sized, Q1: Process, Q2: Process<Value=Q1::Value> {
         ThenElse { condition: self, q1, q2}
     }
 
+    /// Creates a new process that emits the value returned by `self` on the signal `s`, without
+    /// consuming `s`.
     fn emit<S>(self, s: &S) -> Emit<S, Self>
         where S: SEmit + Sized, Self: Sized, Self: Process<Value=<S::VR as ValueRuntime>::V1>
     {
         s.emit(self)
     }
 
+    /// Creates a new process that emits the value returned by `self` on the signal `s`, and
+    /// consumes `s`.
     fn emit_consume<S>(self, s: S) -> Emit<S, Self>
         where S: SEmitConsume + Sized, Self: Sized, Self: Process<Value=<S::VR as ValueRuntime>::V1>
     {
@@ -107,16 +114,19 @@ pub trait ProcessMut: Process {
 }
 
 
+/// A basic process that returns a fixed value.
 pub struct Value<V> {
     value: V,
 }
 
 impl<V> Value<V> where V: 'static + Send {
+    /// Creates a new process that returns the value `v`.
     pub fn new(v: V) -> Self {
         Value {value: v}
     }
 }
 
+/// Creates a process that returns the value `v`.
 pub fn value<V>(v: V) -> Value<V> where V: 'static {
     Value { value: v }
 }
@@ -138,6 +148,7 @@ impl<V> ProcessMut for Value<V> where V: Copy + 'static + Send {
 }
 
 
+/// A process that waits an instant before returning the value of process.
 pub struct Pause<P> {
     process: P,
 }
@@ -291,7 +302,8 @@ pub struct Join<P, Q> {
     process2: Q,
 }
 
-pub struct JoinPoint<V1, V2, C> where C: Continuation<(V1, V2)>, V1: Send, V2: Send {
+/// Structure used to join two processes.
+struct JoinPoint<V1, V2, C> where C: Continuation<(V1, V2)>, V1: Send, V2: Send {
     v1: Mutex<Option<V1>>,
     v2: Mutex<Option<V2>>,
     continuation: Mutex<Option<C>>,
@@ -374,16 +386,20 @@ impl<P, Q> ProcessMut for Join<P, Q>
     }
 }
 
+/// A process that executes many processes in parallel, and returns a vector of values.
 pub struct MultiJoin<P> {
     ps: Vec<P>,
 }
 
-pub struct MultiJoinPoint<V, C> where C: Continuation<Vec<V>> {
+/// Structure used to join a vector of processes.
+struct MultiJoinPoint<V, C> where C: Continuation<Vec<V>> {
     remaining: Mutex<usize>,
     value: Mutex<Vec<Option<V>>>,
     continuation: Mutex<Option<C>>,
 }
 
+/// Creates a process that executes the processes contained in `ps` in parallel, and returns the
+/// vector of their values.
 pub fn multi_join<P>(ps: Vec<P>) -> MultiJoin<P> {
     MultiJoin { ps }
 }
@@ -565,17 +581,15 @@ impl<P> Process for Mut<P> where P: ProcessMut {
 
 
 /// Indicates if a loop is finished.
-
 #[derive(Clone)]
 pub enum LoopStatus<V> {
     Continue, Exit(V)
 }
 
-impl<V> Copy for LoopStatus<V> where V: Copy {
-
-}
+impl<V> Copy for LoopStatus<V> where V: Copy {}
 
 
+/// A process that build a while loop around a `ProcessMut` with return type `LoopStatus`.
 pub struct While<P> {
     process: P,
 }

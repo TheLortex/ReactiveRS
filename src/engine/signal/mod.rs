@@ -41,7 +41,7 @@ pub fn unpack_mutex<V>(x: &mut MutexGuard<Option<V>>) -> V {
 /// A reactive signal.
 /// This trait only provides basic actions on signal status, that are allowed on all the signals.
 /// It does not provide any action on signal value.
-/// More restrictive actions can be allowed through other derived traits (SEmit, SAwaitIn, ...).
+/// More restrictive actions can be allowed through other derived traits (`SEmit`, `SAwaitIn`, ...).
 pub trait Signal where {
     type VR: ValueRuntime;
 
@@ -127,6 +127,7 @@ pub trait SAwaitOneImmediate: Signal {
 /*
     AwaitImmediate
 */
+/// A process that waits for the next emission of the signal, current instant included.
 pub struct AwaitImmediate<S> where S: Signal {
     signal: SignalRuntimeRef<S::VR>,
 }
@@ -154,6 +155,7 @@ impl<S> ProcessMut for AwaitImmediate<S> where S: Signal + 'static {
 /*
     Await
 */
+/// A process that waits for the instant following the next emission of the signal.
 pub struct Await<S> where S: Signal {
     signal: SignalRuntimeRef<S::VR>,
 }
@@ -181,6 +183,8 @@ impl<S> ProcessMut for Await<S> where S: Signal + 'static {
 /*
     Present
 */
+/// A process that calls a process if the signal is present, or calls another at the next instant
+/// if the signal is not present.
 pub struct Present<P, Q, S> where S: Signal {
     signal: SignalRuntimeRef<S::VR>,
     process1: P,
@@ -232,6 +236,7 @@ impl<P, Q, S, V> ProcessMut for Present<P, Q, S>
 /*
     Emit
 */
+/// A process that emits the returned value of a process.
 pub struct Emit<S, P> where S: Signal {
     signal: SignalRuntimeRef<S::VR>,
     process: P,
@@ -268,6 +273,7 @@ impl<S, P> ProcessMut for Emit<S, P>
 /*
     AwaitIn
 */
+/// A process that waits for the signal, and at next instant returns its value.
 pub struct AwaitIn<S> where S: Signal {
     signal: SignalRuntimeRef<S::VR>,
 }
@@ -295,6 +301,7 @@ impl<S> ProcessMut for AwaitIn<S> where S: Signal + 'static {
 /*
     AwaitOneImmediate
 */
+/// A process that waits for an emission of the signal, and returns the emitted value.
 pub struct AwaitOneImmediate<S> where S: Signal {
     signal: SignalRuntimeRef<S::VR>,
 }
