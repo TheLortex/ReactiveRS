@@ -6,15 +6,17 @@ use reactivers::engine::signal::*;
 use reactivers::engine::signal::spmc_signal::*;
 use reactivers::engine::signal::mpsc_signal::*;
 
+use std::sync::Arc;
+use std::fs::File;
+use std::io::prelude::*;
 
-use rand::Rng;
+use self::rand::Rng;
 
 use super::graph::*;
 use super::car::*;
 use super::road::*;
 
-use std::sync::Arc;
-
+// These constant directions are used to index roads and nodes at a crossroad.
 const NORTH:    usize = 0;
 const EAST:     usize = 1;
 const SOUTH:    usize = 2;
@@ -24,48 +26,62 @@ pub type Side = usize;
 const LEFT:     usize = 0;
 const RIGHT:    usize = 1;
 
+/// Global update network information.
+pub struct GlobalInfo {
+    pub weights: EdgesWeight,   // Last estimation of the edges weights.
+    pub moves: Vec<Move>,       // Moves of all the cars.
+}
+
+/// Move of a car.
 #[derive(Copy, Clone)]
 pub enum Move {
-    NONE,
-    SPAWN(RoadInfo, usize, CrossroadId),
-    STEP(i32),
-    VANISH,
-    CROSS(RoadInfo),
+    NONE,                                   // None happened.
+    SPAWN(RoadInfo, usize, CrossroadId),    // The car has spawned at specified road, position,
+                                            // with specified destination crossroad.
+    STEP(i32),                              // The car performs a step of specified length.
+    VANISH,                                 // The car vanished.
+    CROSS(RoadInfo),                        // The car crossed and is now on specified road.
 }
 
+/// Network structure containing all the information relative to crossroads and roads.
 #[derive(Clone)]
 pub struct Network {
-    pub width: usize,
-    pub height: usize,
-    pub car_count: usize,
-    pub cars_per_unit: i32,
-    pub cars_per_crossroad: i32,
-    grid: Vec<Vec<Option<CrossRoad>>>,
-    pub roads: Vec<Road>,
-    graph: Graph,
-    car_graph: Option<Arc<Graph>>,
-    pub crossroads: Vec<CrossroadId>,
+    pub width: usize,                   // Width of the network.
+    pub height: usize,                  // Height of the network.
+    pub car_count: usize,               // Number of cars.
+    pub cars_per_unit: i32,             // Number of cars between two centers of crossroads.
+    pub cars_per_crossroad: i32,        // Number of cars fitting in a crossroad.
+    grid: Vec<Vec<Option<Crossroad>>>,  // Grid containing the crossroads.
+    pub roads: Vec<Road>,               // Vector containing the roads.
+    graph: Graph,                       // Corresponding abstract graph.
+    car_graph: Option<Arc<Graph>>,      // Shared reference to the same graph.
+    pub crossroads: Vec<CrossroadId>,   // Vector containing all the coordinates of existing
+                                        // crossroads.
 }
 
+/// Crossroad Coordinates.
 #[derive(Copy, Clone, Eq, PartialEq)]
 pub struct CrossroadId {
-    pub x: usize,
-    pub y: usize,
+    pub x: usize,   // Abscissa
+    pub y: usize,   // Ordinate
 }
 
+
 use std::ops::{ Index, IndexMut };
-impl Index<CrossroadId> for Vec<Vec<Option<CrossRoad>>> {
-    type Output = Option<CrossRoad>;
+/// Allows indexing the grid by the crossroad coordinates.
+impl Index<CrossroadId> for Vec<Vec<Option<Crossroad>>> {
+    type Output = Option<Crossroad>;
 
     #[inline]
-    fn index(&self, index: CrossroadId) -> &Option<CrossRoad> {
+    fn index(&self, index: CrossroadId) -> &Option<Crossroad> {
         &self[index.y][index.x]
     }
 }
 
-impl IndexMut<CrossroadId> for Vec<Vec<Option<CrossRoad>>> {
+/// Allows mutable indexing of the grid by the crossroad coordinates.
+impl IndexMut<CrossroadId> for Vec<Vec<Option<Crossroad>>> {
     #[inline]
-    fn index_mut(&mut self, index: CrossroadId) -> &mut Option<CrossRoad> {
+    fn index_mut(&mut self, index: CrossroadId) -> &mut Option<Crossroad> {
         &mut self[index.y][index.x]
     }
 }
@@ -78,6 +94,7 @@ impl fmt::Display for CrossroadId {
 }
 
 use std::ops::Add;
+/// Allows to add some move to crossroad coordinates.
 impl Add<(i32, i32)> for CrossroadId {
     type Output = CrossroadId;
 
@@ -90,11 +107,12 @@ impl Add<(i32, i32)> for CrossroadId {
 }
 
 impl CrossroadId {
-
+    /// Creates new crossroad identifier.
     pub fn new(x: usize, y: usize) -> CrossroadId {
         CrossroadId { x, y }
     }
 
+    /// Computes the unit move (dx, dy) and the length to join the destination crossroad.
     pub fn join(&self, dest: CrossroadId) -> (i32, i32, i32) {
         if self.x == dest.x {
             let dy = (dest.y as i32) - (self.y as i32);
@@ -112,18 +130,22 @@ impl CrossroadId {
     }
 }
 
+/// A Crossroad.
 #[derive(Clone)]
-pub struct CrossRoad {
-    id: CrossroadId,
-    pub nodes: Vec<NodeId>,
-    roads: Vec<Vec<Option<RoadId>>>,
-    roads_arriving: Vec<Vec<Option<RoadId>>>,
+pub struct Crossroad {
+    id: CrossroadId,                            // Coordinates
+    pub nodes: Vec<NodeId>,                     // Vector of its 4 quarter nodes.
+                                                // They are indexed by direction.
+    roads: Vec<Vec<Option<RoadId>>>,            // Roads leaving this crossroad.
+                                                // They are indexed by direction and side.
+    roads_arriving: Vec<Vec<Option<RoadId>>>,   // Roads arriving at this crossroad.
+                                                // They are indexed by direction and side.
 }
 
-impl CrossRoad {
-
-    pub fn new(id: CrossroadId, g: &mut Graph) -> CrossRoad {
-        let mut c = CrossRoad {
+impl Crossroad {
+    /// Creates a new crossroad with four nodes without any roads.
+    pub fn new(id: CrossroadId, g: &mut Graph) -> Crossroad {
+        let mut c = Crossroad {
             id,
             nodes: vec!(),
             roads: none_array(4, 2),
@@ -136,6 +158,7 @@ impl CrossRoad {
         c
     }
 
+    /// Enables some roads. Only the cars from enabled roads are able to cross a crossroad.
     fn enable_path(&self, roads: &mut Vec<Road>) {
         // First policy: we enable the most loaded road with some guy waiting.
 //        let mut max = -1;
@@ -149,6 +172,7 @@ impl CrossRoad {
 //        roads[r_max].enable();
 
         // Second policy: we enable the most loaded roads with guys waiting, but in pairs.
+        // We compute the pair of compatible roads with the maximum cumulated load.
         let mut max_pair = ((NORTH, LEFT), (NORTH, LEFT));
         let mut max_load = 0;
 
@@ -183,6 +207,8 @@ impl CrossRoad {
         }
     }
 
+    /// Computes the load of a road, i.e. the numbers of cars on this road.
+    /// If there is no car ready to cross, returns 0.
     fn compute_load(&self, direction: usize, side: usize, roads: &mut Vec<Road>) -> i32 {
         let r = self.roads_arriving[direction][side];
         if r.is_none() || !roads[r.unwrap()].is_waiting() {
@@ -190,22 +216,11 @@ impl CrossRoad {
         }
         return roads[r.unwrap()].get_car_count();
     }
-
-//    fn existing_roads_arriving(&self) -> Vec<RoadId> {
-//        let mut res = vec!();
-//        for d in &self.roads_arriving {
-//            for r in d {
-//                if r.is_some() {
-//                    res.push(r.unwrap());
-//                }
-//            }
-//        }
-//        res
-//    }
 }
 
 
 impl Network {
+    /// Creates a new empty Network, with specified width and heights.
     pub fn new(width: usize, height: usize) -> Network {
         Network {
             width,
@@ -221,14 +236,20 @@ impl Network {
         }
     }
 
+    /// Adds a crossroad to specified location.
     pub fn add_crossroad(&mut self, x: usize, y: usize) {
         let c = CrossroadId::new(x, y);
+        // We check the crossroad does not exist.
         self.assert_crossroad_not_exists(c);
-        self.grid[c] = Some(CrossRoad::new(c, &mut self.graph));
+
+        // We add it to the graph and update the network.
+        self.grid[c] = Some(Crossroad::new(c, &mut self.graph));
         self.crossroads.push(c);
     }
 
-    pub fn new_road(&mut self, src: CrossroadId, dest: CrossroadId, side: Side) -> RoadId {
+    /// Adds a new specific road.
+    pub fn new_road(&mut self, src: CrossroadId, dest: CrossroadId, side: Side){
+        // We get the parameters of the road.
         let (dx, dy, length) = src.join(dest);
         let length = length * self.cars_per_unit - self.cars_per_crossroad;
         let (d1, d2) = compute_directions(dx, dy, side);
@@ -244,7 +265,8 @@ impl Network {
             length: length as usize,
         };
 
-        let road = Road::new(road_info, length);
+        // Then, we add it to the crossroads and the roads.
+        let road = Road::new(road_info);
         self.roads.push(road);
         self.crossroad_mut(src).roads[d1][side] = Some(id);
         self.crossroad_mut(dest).roads_arriving[d1][side] = Some(id);
@@ -258,10 +280,9 @@ impl Network {
 
         self.graph.add_edge(n1, n3, id);
         self.graph.add_edge(n2, n3, id);
-
-        id
     }
 
+    /// Add the two road linking the first crossroad to the second one.
     pub fn add_road(&mut self, (src_x, src_y): (usize, usize), (dest_x, dest_y): (usize, usize)) {
         let (src, dest) =
             (CrossroadId::new(src_x, src_y), CrossroadId::new(dest_x, dest_y));
@@ -273,42 +294,51 @@ impl Network {
         // Checks that they are aligned.
         let (dx, dy, length) = src.join(dest);
 
-        // Checks that the road can be built between the two crossroads.
+        // Checks that the road can be built between the two crossroads, i.e. that it does not
+        // generate any collision.
         for k in 1..length {
             self.assert_crossroad_not_exists(src + (k*dx, k*dy));
         }
 
+        // Creates both roads.
         self.new_road(src, dest, LEFT);
         self.new_road(src, dest, RIGHT);
     }
 
+    /// Adds all roads between the crossroads `c1` and `c2`.
     pub fn add_all_roads(&mut self, c1: (usize, usize), c2: (usize, usize)) {
         self.add_road(c1, c2);
         self.add_road(c2, c1);
     }
 
+    /// Panics if the crossroad exists.
     pub fn assert_crossroad_exists(&self, c: CrossroadId) {
         if self.grid[c].is_none() {
             panic!("This crossroad {} does not exist.", c);
         }
     }
 
+    /// Panics if the crossroad does not exist.
     pub fn assert_crossroad_not_exists(&self, c: CrossroadId) {
         if self.grid[c].is_some() {
             panic!("This crossroad {} already exists.", c);
         }
     }
 
-    pub fn crossroad(&self, c: CrossroadId) -> &CrossRoad {
+    /// Retrieves the specified crossroad. Panics if it does not exist.
+    pub fn crossroad(&self, c: CrossroadId) -> &Crossroad {
         self.grid[c].as_ref().unwrap()
     }
 
-    pub fn crossroad_mut(&mut self, c: CrossroadId) -> &mut CrossRoad {
+    /// Retrieves a mutable reference to the specified crossroad. Panics if it does not exist.
+    pub fn crossroad_mut(&mut self, c: CrossroadId) -> &mut Crossroad {
         self.grid[c].as_mut().unwrap()
     }
 
+    /// Creates a new car. It transfers the current graph to the car, with a fresh identifier.
     pub fn create_car(&mut self) -> Car {
         if self.car_graph.is_none() {
+            // If needed, we generate this shared reference.
             self.car_graph = Some(Arc::new(self.clone_graph()));
         }
         let id = self.car_count;
@@ -317,7 +347,9 @@ impl Network {
         Car::new(id, 0, CrossroadId::new(0, 0), self.car_graph.clone().unwrap())
     }
 
+    /// Spawns a car on a random road, and finds a random destination.
     pub fn generate_request(&mut self, id: CarId) -> (RoadInfo, usize, CrossroadId) {
+        // First, it finds a road to spawn the car.
         let mut rng = rand::thread_rng();
         let mut road_id = rng.gen_range(0, self.roads.len());
 
@@ -327,17 +359,21 @@ impl Network {
             pos = self.roads[road_id].spawn_car(id);
         }
 
+        // Then, it gets the crossroad at the end of this road.
         let road_info = self.roads[road_id].info();
         let source_c = road_info.end;
 
+        // It randomly chooses a crossroad different from the previous crossroad.
         let mut destination = self.random_crossroad();
         while destination == source_c {
             destination = self.random_crossroad();
         }
 
+        // Returns the final spawn position and destination.
         (road_info, pos as usize, destination)
     }
 
+    /// Spawns all the car that requested to be. Updates the move vector with the resulting spawns.
     pub fn spawn_cars(&mut self, actions: Vec<Action>, moves: &mut Vec<Move>) {
         for (i, a) in actions.iter().enumerate() {
             if let Action::SPAWN = *a {
@@ -347,12 +383,15 @@ impl Network {
         }
     }
 
+    /// Makes the crossroads enable some roads.
     pub fn enable_paths(&mut self) {
         for &c in &self.crossroads {
             self.grid[c].as_ref().unwrap().enable_path(&mut self.roads);
         }
     }
 
+    /// Performs an update step on all roads, based on the Actions and Speeds vector.
+    /// Updates the resulting Moves vector, and returns the EdgesWeight estimation.
     pub fn roads_step(&mut self, actions: &mut Vec<Action>, moves: &mut Vec<Move>, speeds: &Vec<Speed>)
                    -> EdgesWeight
     {
@@ -360,10 +399,11 @@ impl Network {
 
         // All the possibles enabled paths are tried.
         for i in 0..roads.len() {
+            // Each roads tries to make its first car cross, if enabled.
             Road::deliver(i, actions, moves, roads);
         }
 
-        // We make a step for all remaining cars.
+        // We make a step for all remaining cars, and get the weights estimations.
         let mut weights = vec!();
         for i in 0..roads.len() {
             weights.push(roads[i].step_forward(moves, speeds));
@@ -373,9 +413,10 @@ impl Network {
         return edges_weight
     }
 
-    pub fn process(mut self, central_signal: SPMCSignalSender<Arc<GlobalInfos>>,
-                      pos_signal: MPSCSignalReceiver<(CarId, (Action, Speed)), (Vec<Action>, Vec<Speed>)>)
-        -> impl Process<Value=()> {
+    /// Returns the central reactive process of the network.
+    pub fn process(mut self, central_signal: SPMCSignalSender<Arc<GlobalInfo>>,
+                   pos_signal: MPSCSignalReceiver<(CarId, (Action, Speed)), (Vec<Action>, Vec<Speed>)>)
+                   -> impl Process<Value=()> {
 
         let mut weights = vec!();
         for r in &self.roads {
@@ -387,92 +428,110 @@ impl Network {
         let beta = 0.99;
 
         let cont = move | (mut actions, speeds): (Vec<Action>, Vec<Speed>) | {
+            // We count the steps.
             step += 1;
+
+            // We enable some path.
             self.enable_paths();
 
+            // We compute the road step and get back some weights.
             let mut moves = (0..actions.len()).map(|_| { Move::NONE }).collect();
             let weights = self.roads_step(&mut actions, &mut moves, &speeds);
 
+            // We spawn the cars that requested to be.
             self.spawn_cars(actions, &mut moves);
 
+            // We count the number of cars that did something.
             let nb_moves: i32 = moves.iter().map(| m | { match m {
                 &Move::NONE => 0,
                 _ => 1,
             }}).sum();
-            mean_moves = beta * mean_moves + (1. - beta) * (nb_moves as f32);
-            let res = Arc::new(GlobalInfos { weights, moves });
 
+            // We keep some moving mean of this number. If it is too low, nothing is happening, so
+            // it panics.
+            mean_moves = beta * mean_moves + (1. - beta) * (nb_moves as f32);
             if mean_moves < 1e-3 {
                 panic!("It looks like a stationary state: not enough moves.");
             }
-            res
+
+            // Returns the updated information about the step.
+            Arc::new(GlobalInfo { weights, moves })
         };
 
-        let p = pos_signal.await_in().map(cont).emit_consume(central_signal).loop_inf();
+        let p =
+            pos_signal.await_in()                   // Awaits the car actions
+                .map(cont)                          // Computes the resulting moves and weights.
+                .emit_consume(central_signal)       // Emits this information.
+                .loop_inf();                        // Loops.
         return p;
     }
 
-    pub fn to_string(&self, cars: bool) -> String {
+    /// Returns a String representing the network.
+    pub fn to_string(&self) -> String {
+        // We first build the corresponding char two-dimensional vector.
         let (width, height) = (2 * self.width - 1, 2 * self.height - 1);
         let mut char_map: Vec<Vec<char>> = (0..height).map(|_| { (0..width).map(|_| { ' ' }).collect()}).collect();
+
+        // Then we add the crossroads.
         for c in &self.crossroads {
             char_map[2 * c.y][2 * c.x] = 'C';
         }
+
+        // Then we add the roads.
         for r in &self.roads {
             let start = r.info().start;
             let (dx, dy, length) = start.join(r.info().end);
+
+            // Chooses the right symbol.
             let c = if dx == 0 { '|' } else { '-' };
             let (x, y) = (2*start.x, 2*start.y);
-            if cars {
-                let mut car_count = r.get_car_count();
-                let k = 2*length - 1;
-                let ref_char = &mut char_map[(y as i32 + k * dy) as usize][(x as i32 + k * dx) as usize];
-
-                if ref_char.is_digit(10) {
-                    car_count += ref_char.to_digit(10).unwrap() as i32;
-                }
-
-                *ref_char = car_count.to_string().pop().unwrap();
-            }
 
             for k in 1..(2*length) {
-                let ref_c = &mut char_map[(y as i32 + k * dy) as usize][(x as i32 + k * dx) as usize];
-                if *ref_c == ' ' {
-                    *ref_c = c;
-                }
+                char_map[(y as i32 + k * dy) as usize][(x as i32 + k * dx) as usize] = c;
             }
         }
 
+        // We collect the characters into a string.
         char_map.into_iter().map(|line| { line.into_iter().collect::<String>().add("\n") }).collect()
     }
 
+    /// Loads a network from a file located in trafficsim/maps/.
     pub fn load_file(&mut self, filename: &str) {
-        use std::fs::File;
-        use std::io::prelude::*;
-
-        let mut f = File::open(format!("./src/trafficsim/maps/{}", filename)).expect("file not found");
+        let mut f = File::open(format!("./src/trafficsim/maps/{}", filename)).expect("File not found");
 
         let mut contents = String::new();
         f.read_to_string(&mut contents)
-            .expect("something went wrong reading the file");
+            .expect("Something went wrong reading the file");
 
         self.load_string(&contents);
     }
 
+    /// Loads a network from a string.
     pub fn load_string(&mut self, s: &str) {
+        // We remove ending blank lines.
         let s = s.trim_right();
-        let mut char_map: Vec<Vec<char>> = s.split("\n").map(| line | { line.trim_right().chars().collect() }).collect();
+
+        // We split lines and remove ending spaces and `\n`.
+        let mut char_map: Vec<Vec<char>> =
+            s.split("\n")
+                .map(| line | { line.trim_right().chars().collect() })
+                .collect();
+
+        // We compute the resulting width and height of the character array.
         let width = char_map.iter().map(| line | { line.len() }).max().unwrap();
         let height = char_map.len();
+
+        // We add missing spaces.
         for line in char_map.iter_mut() {
             for _ in 0..(width - line.len()) {
                 line.push(' ');
             }
         }
 
+        // We change the network size.
         *self = Network::new((width + 1) / 2, (height + 1) / 2);
 
-        // First, we add all the crossroads.
+        // Then, we add all the crossroads.
         for (j, line) in char_map.iter().enumerate() {
             for (i, c) in line.iter().enumerate() {
                 if *c == 'C' {
@@ -541,30 +600,36 @@ impl Network {
         }
     }
 
+    /// Returns the cloned graph.
     pub fn clone_graph(&self) -> Graph {
         self.graph.clone()
     }
 
+    /// Returns random crossroad coordinates (of an existing crossroad).
     pub fn random_crossroad(&self) -> CrossroadId {
         let i = rand::thread_rng().gen_range(0, self.crossroads.len());
         self.crossroads[i]
     }
 
+    /// Removes unused roads, i.e. dead ends.
     pub fn simplify(&mut self) {
         println!("The network has {} crossroads and {} roads.",
                  self.crossroads.len(), self.roads.len());
 
+        // First, we identify nodes that have no escape.
         let dead_ends: Vec<bool> = self.graph.nodes.iter().map(| n | {
             n.edges().is_empty()
         }).collect();
 
+        // Then, we mark all the roads that do not end in a dead end.
         let used_roads: Vec<bool> = self.roads.iter().map(|r| {
             !dead_ends[r.info().destination]
         }).collect();
 
+        // We create a fresh network.
         let mut network = Network::new(self.width, self.height);
 
-        // First, we add all the interesting crossroads.
+        // Then, we add all the interesting crossroads, i.e. that don't have 4 dead end nodes.
         for &c in &self.crossroads {
             let c = self.crossroad(c);
             if c.nodes.iter()
@@ -574,7 +639,7 @@ impl Network {
             }
         }
 
-        // Second, we add only the used edges.
+        // Finally, we add only the used edges.
         for r in &self.roads {
             let r = r.info();
             if used_roads[r.id] {
@@ -582,6 +647,7 @@ impl Network {
             }
         }
 
+        // We change the initial network.
         *self = network;
         println!("After simplification, it only has {} crossroads and {} roads.",
                  self.crossroads.len(), self.roads.len());
@@ -590,12 +656,13 @@ impl Network {
 
 impl fmt::Display for Network {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}", self.to_string(false))
+        write!(f, "{}", self.to_string())
     }
 }
 
-pub fn none_array<T>(width: usize, height: usize) -> Vec<Vec<Option<T>>> {
-    (0..width).map(|_| { (0..height).map(|_| { None }).collect()}).collect()
+/// Returns an array of size `height` x `width`.
+pub fn none_array<T>(height: usize, width: usize) -> Vec<Vec<Option<T>>> {
+    (0..height).map(|_| { (0..width).map(|_| { None }).collect()}).collect()
 }
 
 /// Computes the road direction and its node direction.
@@ -612,6 +679,7 @@ pub fn compute_directions(dx: i32, dy: i32, side: Side) -> (usize, usize) {
     (d1, d2)
 }
 
+/// Returns the previous (clockwise) direction.
 pub fn previous_direction(d: usize) -> usize {
     (d + 3) % 4
 }
