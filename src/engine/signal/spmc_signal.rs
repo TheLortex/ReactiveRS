@@ -1,3 +1,5 @@
+//! A module for Single Producer, Multiple Consumer signals.
+
 use super::*;
 use std::sync::Mutex;
 
@@ -57,11 +59,13 @@ impl<V> ValueRuntime for SPMCSignalValueRuntime<V> where V: Clone + 'static + Se
     }
 }
 
+/// Receiver part for SPMC, which is Clone.
 #[derive(Clone)]
 pub struct SPMCSignalReceiver<V> where V: Clone + 'static + Send + Sync {
     signal: SignalRuntimeRef<SPMCSignalValueRuntime<V>>,
 }
 
+/// Sender part for SPMC, which is not Clone.
 pub struct SPMCSignalSender<V> where V: Clone + 'static + Send + Sync {
     signal: SignalRuntimeRef<SPMCSignalValueRuntime<V>>,
 }
@@ -88,6 +92,7 @@ impl<V> SAwaitOneImmediate for SPMCSignalReceiver<V> where V: 'static + Clone + 
 impl<V> SEmitConsume for SPMCSignalSender<V> where V: 'static + Clone + Send + Sync {}
 
 
+/// Creates a new SPMC Signal. Returns Sender and Receiver parts.
 pub fn new<V>() -> (SPMCSignalSender<V>, SPMCSignalReceiver<V>) where V: Clone + Send + Sync
 {
     let value_runtime = SPMCSignalValueRuntime {

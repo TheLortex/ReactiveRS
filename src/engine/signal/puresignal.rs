@@ -1,3 +1,5 @@
+//! A module for simple signals without any values.
+
 use super::*;
 
 /*
@@ -40,6 +42,7 @@ pub struct PureSignal {
 }
 
 impl PureSignal {
+    /// Creates a new PureSignal.
     pub fn new() -> PureSignal {
         PureSignal { signal: SignalRuntimeRef::new(PureSignalValueRuntime {}) }
     }
@@ -55,6 +58,7 @@ impl Signal for PureSignal {
 
 impl SEmit for PureSignal {}
 
+/// Creates a new PureSignal.
 pub fn new() -> PureSignal {
     PureSignal::new()
 }

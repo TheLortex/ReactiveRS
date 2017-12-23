@@ -1,3 +1,5 @@
+//! A module for basic signals with values.
+
 use super::*;
 use std::sync::Mutex;
 
@@ -104,8 +106,10 @@ impl<V1, V2> SAwaitOneImmediate for ValueSignal<V1, V2>
     where V1: 'static + Clone + Send + Sync, V2: 'static + Clone + Send + Sync {}
 
 
+/// Creates a new Value Signal from a default value and a combination function `gather`.
 pub fn new<F, V1, V2>(default: V2, gather: F) -> ValueSignal<V1, V2>
-    where V1: 'static + Clone + Send + Sync, V2: 'static + Clone + Send + Sync,
+    where V1: 'static + Clone + Send + Sync,
+          V2: 'static + Clone + Send + Sync,
           F: Fn(V1, V2) -> V2 + 'static, F: Send + Sync {
     ValueSignal::new(default, gather)
 }

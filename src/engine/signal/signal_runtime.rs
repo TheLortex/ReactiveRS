@@ -1,9 +1,11 @@
+//! Base implementation of SignalRuntime.
+
 use super::*;
 use std::sync::{Arc, Mutex};
 
 
-/// The ValueRuntime is the part of the SignalRuntime which manipulates the values of the signal.
-/// It is a trait, since it will be different for each type of signal (Pure signal, MPMC, ...).
+/// ValueRuntime: part of the SignalRuntime which manipulates the values of the signal.
+// It is a trait, since it will be different for each type of signal (Pure signal, MPMC, ...).
 pub trait ValueRuntime: Send + Sync {
     /// Input type of the signal (type of emitted values).
     type V1: Send + Sync;
@@ -31,10 +33,9 @@ pub trait ValueRuntime: Send + Sync {
 }
 
 
-/// Signal Runtime
-/// It contains all the information concerning the signal status, the continuations interacting with
-/// this status.
-/// It also contains a Value Runtime, to handle the value of the signal and the continuations
+/// Signal Runtime: contains all the information concerning the signal status, and the continuations
+/// interacting with this status.
+/// Contains a `ValueRuntime`, to handle the value of the signal and the continuations
 /// waiting for this value.
 pub struct SignalRuntime<VR> where VR: ValueRuntime {
     present: Mutex<bool>,
@@ -46,6 +47,7 @@ pub struct SignalRuntime<VR> where VR: ValueRuntime {
 }
 
 impl<VR> SignalRuntime<VR> where VR: ValueRuntime {
+    /// Creates a new `SignalRuntime` from `value_runtime`.
     pub fn new(value_runtime: VR) -> Self {
         SignalRuntime {
             present: Mutex::new(false),
@@ -73,6 +75,7 @@ impl<VR> Clone for SignalRuntimeRef<VR> where VR: ValueRuntime {
 /// Implements all the possible actions on a Signal Runtime via a SignalRuntimeRef.
 impl<VR> SignalRuntimeRef<VR> where VR: ValueRuntime + 'static {
 
+    /// Creates a new `SignalRuntimeRef` from `value_runtime`.
     pub fn new(value_runtime: VR) -> Self {
         SignalRuntimeRef { runtime: Arc::new(SignalRuntime::new(value_runtime)) }
     }
