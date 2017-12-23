@@ -17,7 +17,7 @@ pub fn main() {
     println!("{}", network);
 
     // We define the parameters of the simulation.
-    let (duration, car_count) = (1., 1000);
+    let (duration, car_count) = (0.5, 2000);
 
     // We create the cars on the network.
     let cars: Vec<Car> = (0..car_count).map(|_| {
