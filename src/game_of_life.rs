@@ -40,7 +40,7 @@ pub fn game_of_life () {
 
     let (mut ofs_y, mut ofs_x, mut win) = watcher.render_grid(gameoflife::grid_to_data(&starting_grid));
     ncurses::mvprintw(ofs_y, x/2 - 6, "Game of life");
-    ncurses::mvprintw(ofs_y  + (m as i32) + 2, x / - 39, "q: Quit | r: Randomize | Click to toggle cells | Enter: start the simulation");
+    ncurses::mvprintw(ofs_y  + (m as i32) + 2, (x / 2) - 39, "q: Quit | r: Randomize | Click to toggle cells | Enter: start the simulation");
 
     keypad(win , true);
     mousemask((ncurses::BUTTON1_PRESSED  | ncurses::REPORT_MOUSE_POSITION) as u64, None);
@@ -79,7 +79,7 @@ pub fn game_of_life () {
             for x in 0..n {
                 for y in 0..m {
                     if between.ind_sample(&mut rng) < p {
-                        starting_grid[x][y] = true;
+                        starting_grid[x][y] = !starting_grid[x][y];
                     }
                 }
             }

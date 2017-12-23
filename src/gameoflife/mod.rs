@@ -95,7 +95,6 @@ pub fn run_simulation (starting_grid: Vec<Vec<bool>>, watcher: TerminalWatcher)
     let watcher_process = watcher.process(single_consumer);
     let simulation_process = watcher_process.multi_join(cell_processes);
 
-    println!("Simulating");
     // Run the thing
     engine::execute_process(simulation_process);
 }
