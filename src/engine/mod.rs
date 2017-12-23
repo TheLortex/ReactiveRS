@@ -12,8 +12,8 @@ use self::coco::deque::{self, Worker, Stealer};
 
 use std::sync::{Arc, Barrier};
 use std::sync::atomic::{AtomicIsize, Ordering};
-use std::thread;
 use std::mem;
+use std::thread;
 
 type JobStealer = Stealer<Box<Continuation<()>>>;
 
