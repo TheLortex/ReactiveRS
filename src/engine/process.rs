@@ -469,6 +469,12 @@ impl<P> Process for MultiJoin<P>
         }
 
         if ok {
+            // Wait for remaining references to be free.
+            while Arc::strong_count(&join_point_original) > 1 {
+                thread::sleep(time::Duration::from_millis(10));
+            }
+
+
             let join_point_original = match Arc::try_unwrap(join_point_original) {
                 Ok(val) => val,
                 _ => unreachable! ("Process join failed."),
