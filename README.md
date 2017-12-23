@@ -20,7 +20,7 @@ in `target/debug/doc/reactivers/` folder.
 
 The library has already been generated and is directly
 available in `doc/` folder. It can be opened by opening
-`index.html` with a browser.
+`doc/reactivers/index.html` with a browser.
 
 Only the parallel implementation is given.
 The addition of many `Mutex` and synchronization points
@@ -45,7 +45,7 @@ To run the application, use the following command:
 `cargo run --bin trafficsim --features trafficsim`.
 (`release` parameter can be added).
 
-A documentation has also generated in `doc/` folder.
+A documentation has also been generated in `doc/` folder.
 (This has be done by changing the binary 
 to become a part of the library).
 
