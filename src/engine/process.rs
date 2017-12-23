@@ -335,7 +335,7 @@ impl<P, Q> Process for Join<P, Q>
             if ok {
                 let join_point = match Arc::try_unwrap(join_point) {
                     Ok(val) => val,
-                    _ => panic!("Process join failed."),
+                    _ => unreachable!("Process join failed"),
                 };
 
                 let val = join_point.v2.into_inner().unwrap().unwrap();
@@ -359,7 +359,7 @@ impl<P, Q> Process for Join<P, Q>
             if ok {
                 let join_point2 = match Arc::try_unwrap(join_point2) {
                     Ok(val) => val,
-                    _ => panic!("Process join failed."),
+                    _ => unreachable!("Process join failed."),
                 };
 
                 let val = join_point2.v1.into_inner().unwrap().unwrap();
@@ -453,7 +453,7 @@ impl<P> Process for MultiJoin<P>
                 // Get ownership of `join_point`.
                 let join_point = match Arc::try_unwrap(join_point) {
                     Ok(val) => val,
-                    _ => panic!("Process join failed."),
+                    _ => unreachable!("Process join failed."),
                 };
 
                 // Get ownership of processes values and next continuation.
@@ -487,7 +487,7 @@ impl<P> Process for MultiJoin<P>
         if ok {
             let join_point_original = match Arc::try_unwrap(join_point_original) {
                 Ok(val) => val,
-                _ => panic! ("Process join failed."),
+                _ => unreachable! ("Process join failed."),
             };
 
             let value = join_point_original.value.into_inner().unwrap();
@@ -575,9 +575,13 @@ impl<P> Process for Mut<P> where P: ProcessMut {
 
 
 /// Indicates if a loop is finished.
+#[derive(Clone)]
 pub enum LoopStatus<V> {
     Continue, Exit(V)
 }
+
+impl<V> Copy for LoopStatus<V> where V: Copy {}
+
 
 /// A process that build a while loop around a `ProcessMut` with return type `LoopStatus`.
 pub struct While<P> {

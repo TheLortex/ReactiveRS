@@ -12,8 +12,8 @@ use self::coco::deque::{self, Worker, Stealer};
 
 use std::sync::{Arc, Barrier};
 use std::sync::atomic::{AtomicIsize, Ordering};
-use std::thread;
 use std::mem;
+use std::thread;
 
 type JobStealer = Stealer<Box<Continuation<()>>>;
 
@@ -262,6 +262,8 @@ pub fn execute_process_steps<P>(process: P, n_workers: usize, max_iters: i32) ->
 mod tests {
     extern crate test;
     extern crate cpuprofiler;
+    extern crate coco;
+
     use self::cpuprofiler::PROFILER;
 
     use engine::process::{Process, value, LoopStatus, ProcessMut, multi_join};
@@ -269,8 +271,80 @@ mod tests {
     use engine;
     use engine::signal::*;
 
+    use std::sync::atomic::AtomicIsize;
+    use std::sync::Barrier;
+    use engine::continuation::Continuation;
+    use engine::SharedData;
+    use self::coco::deque;
     use std::sync::{Arc, Mutex};
     use self::test::Bencher;
+
+    #[test]
+    fn test_continuation_pause() {
+        let container: Arc<Mutex<Option<i32>>> = Arc::new(Mutex::new(None));
+        let container2 = container.clone();
+
+        let continuation = Box::new(move |_: &mut engine::Runtime, ()| {
+            let mut cont = container2.lock().unwrap();
+            *cont = Some(12);
+        });
+
+        let (worker, _) = deque::new();
+
+        // Shared data structure between workers.
+        let shared_data = SharedData {
+            runtimes_jobs: vec!(),
+            n_local_working: AtomicIsize::new(1),
+            n_global_working: AtomicIsize::new(0),
+            sync_barrier: Barrier::new(1),
+        };
+
+        let shared_data = Arc::new(shared_data);
+
+        let mut runtime = engine::Runtime::new(shared_data.clone(), worker);
+        runtime.on_current_instant(Box::new(continuation.pause().pause().pause()));
+
+        // Run for three steps: consume the pauses.
+        runtime.work(3);
+        {
+            assert_eq!(*container.lock().unwrap(), None);
+        }
+        // Run for one last step to execute the continuation.
+        runtime.work(1);
+        {
+            assert_eq!(*container.lock().unwrap(), Some(12));
+        }
+    }
+
+
+    #[test]
+    fn test_continuation_map() {
+        let container: Arc<Mutex<Option<i32>>> = Arc::new(Mutex::new(None));
+        let container2 = container.clone();
+
+        let continuation = Box::new(move |_: &mut engine::Runtime, x: i32| {
+            let mut cont = container2.lock().unwrap();
+            *cont = Some(x);
+        });
+
+
+        let (worker, _) = deque::new();
+
+        // Shared data structure between workers.
+        let shared_data = SharedData {
+            runtimes_jobs: vec!(),
+            n_local_working: AtomicIsize::new(1),
+            n_global_working: AtomicIsize::new(0),
+            sync_barrier: Barrier::new(1),
+        };
+
+        let shared_data = Arc::new(shared_data);
+
+        let mut runtime = engine::Runtime::new(shared_data.clone(), worker);
+        runtime.on_current_instant(Box::new(continuation.map(|()| 12)));
+        runtime.work(-1);
+        assert_eq!(container.lock().unwrap().unwrap(), 12);
+    }
 
     #[test]
     fn test_map() {
@@ -452,6 +526,8 @@ mod tests {
         assert_eq!((m * (m + 1), m * m), engine::execute_process(program));
     }
 
+    #[test]
+    #[ignore]
     fn test_while_perf() {
         let mut x = 1000;
         let c = move |_| {
@@ -467,6 +543,7 @@ mod tests {
     }
 
     #[bench]
+    #[ignore]
     fn bench_while_perf(b: &mut Bencher) {
         b.iter(|| test_while_perf());
     }
@@ -625,5 +702,79 @@ mod tests {
         let p3 = receiver.await_one_immediate().map(loop3).pause().loop_while();
         let p = p1.join(p2.join(p3));
         assert_eq!(engine::execute_process(p), (10, (20, 20)));
+    }
+
+
+    #[test]
+    fn test_join_mut() {
+        let counter = Arc::new(Mutex::new((0, 1)));
+
+        let counter1 = counter.clone();
+        let counter2 = counter.clone();
+        let counter3 = counter.clone();
+
+        let add_1 = move |_| {
+            let mut x = counter1.lock().unwrap();
+            let (vx, vy) = *x;
+            *x = (vx+vy, vy);
+        };
+
+        let add_2 = move |_| {
+            let mut x = counter2.lock().unwrap();
+            let (vx, vy) = *x;
+            *x = (vx+vy+1, vy);
+        };
+
+        let conditional_inner_loop = move |_| {
+            let mut x = counter3.lock().unwrap();
+            let (vx, vy) = *x;
+
+            if vy < 3 {
+                *x = (vx, vy + 1);
+                LoopStatus::Continue
+            } else { // vy == 3, vx has been incremented by 15
+                *x = (vx, 1);
+                LoopStatus::Exit(vx)
+            }
+        };
+
+        let conditional_outer_loop = move |vx| {
+            if vx > 16 {
+                LoopStatus::Exit(vx)
+            } else {
+                LoopStatus::Continue
+            }
+        };
+
+        let p =value(()).map(add_1)
+            .join(
+                value(()).map(add_2)
+            )
+            .map(conditional_inner_loop)
+            .loop_while()
+            .map(conditional_outer_loop)
+            .loop_while();
+
+        // The process is:
+        // let x = 0
+        // while x <= 16
+        //   for y = 1 to 3
+        //      x = x + y
+        //      x = x + y + 1
+        // return x
+
+        assert_eq!(engine::execute_process(p), 30);
+    }
+
+    #[test]
+    fn test_thenelse_mut() {
+        let p = value(true)
+            .then_else(
+                value(LoopStatus::Exit(42)),
+                value(LoopStatus::Continue)
+            )
+            .loop_while();
+
+        assert_eq!(engine::execute_process(p), 42);
     }
 }

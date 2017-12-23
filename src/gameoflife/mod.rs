@@ -12,16 +12,15 @@ pub mod watcher;
 
 use self::cell::*;
 use self::watcher::*;
-use self::cpuprofiler::PROFILER;
 use self::itertools::Itertools;
 
-use std::time;
-
+/// Check if coordinates (x,y) are in a n*m grid.
 pub fn is_valid(x: isize, y: isize, n: usize, m: usize) -> bool {
     return x >= 0 && y >= 0 && x < n as isize && y < m as isize;
 }
 
-pub fn grid_to_data (starting_grid: &Vec<Vec<bool>>) -> Vec<(bool, usize, usize)>{
+/// Converts the boolean grid format to a vector of positions and state for rendering.
+pub fn grid_to_data (starting_grid: &Vec<Vec<bool>>) -> Vec<(usize, usize)>{
     let mut data_vec = vec!();
 
     let n = starting_grid.len();
@@ -29,13 +28,20 @@ pub fn grid_to_data (starting_grid: &Vec<Vec<bool>>) -> Vec<(bool, usize, usize)
 
     for (x, line) in starting_grid.iter().enumerate() {
         for (y, elem) in line.iter().enumerate() {
-            data_vec.push((*elem, n-1-x, m-1-y));
+            if *elem {
+                data_vec.push((n-1-x, m-1-y));
+            }
         }
     };
     data_vec
 }
 
-pub fn run_simulation (starting_grid: Vec<Vec<bool>>, watcher: TerminalWatcher)
+pub fn run_simulation (starting_grid: Vec<Vec<bool>>, watcher: Option<TerminalWatcher>) {
+    run_simulation_steps(starting_grid, watcher, 4, -1);
+}
+
+/// Run a simulation, with a given starting grid and a watcher process that can render what is happening.
+pub fn run_simulation_steps (starting_grid: Vec<Vec<bool>>, watcher: Option<TerminalWatcher>, n_workers: usize, max_iters: i32)
 {
     let n = starting_grid.len();
     if n == 0 {
@@ -43,8 +49,9 @@ pub fn run_simulation (starting_grid: Vec<Vec<bool>>, watcher: TerminalWatcher)
     }
     let m = starting_grid[0].len();
 
-    let (multi_producer, single_consumer) = mpsc_signal::new(|(x, y), mut alive_list: Vec<(bool, usize, usize)>| {
-        alive_list.push((true, x, y));
+    // Create the signal that the renderer will listen on.
+    let (multi_producer, single_consumer) = mpsc_signal::new(|(x, y), mut alive_list: Vec<(usize, usize)>| {
+        alive_list.push((x, y));
         alive_list
     });
 
@@ -55,7 +62,7 @@ pub fn run_simulation (starting_grid: Vec<Vec<bool>>, watcher: TerminalWatcher)
         }).collect_vec()
     }).collect_vec();
 
-    // Create for each cell references to neighbor signals + save a copy for the watcher process.
+    // Create for each cell references to neighbor signals.
     let mut neighbors_grid = starting_grid.iter().enumerate().map(|(x, line)| {
         let neighbors_line = line.iter().enumerate().map(|(y, _)| {
             let mut ref_signals: Vec<ValueSignal<(), i32>> = vec!();
@@ -78,14 +85,14 @@ pub fn run_simulation (starting_grid: Vec<Vec<bool>>, watcher: TerminalWatcher)
 
     // Create processes.
     let mut cell_processes = vec!();
-
     let mut i = 0;
-
     while let Some(mut cell_signal_line) = cell_signal_grid.pop() {
-        let mut j = 0;
 
+        let mut j = 0;
         let mut neighbors_line = neighbors_grid.pop().unwrap();
+
         while let Some((cell, signal, status_emitter)) = cell_signal_line.pop() {
+
             let mut neighbors = neighbors_line.pop().unwrap();
             cell_processes.push(cell.process(signal, neighbors, (status_emitter, i, j)));
             j += 1;
@@ -94,33 +101,15 @@ pub fn run_simulation (starting_grid: Vec<Vec<bool>>, watcher: TerminalWatcher)
         i += 1;
     };
 
-
-    let mut counter = 0;
-    let mut last_time = time::Instant::now();
-
-    let incr_counter = move |()| {
-        if counter == 0 {
-            last_time = time::Instant::now();
-        }
-
-        counter += 1;
-        if counter == 1000 {
-            counter = 0;
-
-            println!("Elapsed: {}", last_time.elapsed().as_secs());
-            last_time = time::Instant::now();
-        }
-    };
-
-    let perf_process = value(()).map(incr_counter).pause().loop_inf();
-
-    let watcher_process = watcher.process(single_consumer);
-    let simulation_process = watcher_process.multi_join(cell_processes);
-
-    println!("Simulating");
-
-    // Run the thing
-    //PROFILER.lock().unwrap().start("./profile").unwrap();
-    engine::execute_process(simulation_process, );
-    //PROFILER.lock().unwrap().stop().unwrap();
+    if let Some(watcher) = watcher {
+        // Create renderer process.
+        let watcher_process = watcher.process(single_consumer);
+        // Combine processes.
+        let simulation_process = watcher_process.multi_join(cell_processes);
+        // Run the thing
+        engine::execute_process_steps(simulation_process, n_workers, max_iters);
+    } else {
+        let simulation_process = multi_join(cell_processes);
+        engine::execute_process_steps(simulation_process, n_workers, max_iters);
+    }
 }
