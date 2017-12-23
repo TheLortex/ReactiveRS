@@ -138,7 +138,7 @@ mod tests {
                 starting_grid.push(line);
             }
 
-            gameoflife::run_simulation_steps(starting_grid, None, 1, 100);
+            gameoflife::run_simulation_steps(starting_grid, None, 1, 10);
         });
     }
 
@@ -160,7 +160,7 @@ mod tests {
                 starting_grid.push(line);
             }
 
-            gameoflife::run_simulation_steps(starting_grid, None, 2, 100);
+            gameoflife::run_simulation_steps(starting_grid, None, 2, 10);
         });
     }
 
@@ -182,7 +182,7 @@ mod tests {
                 starting_grid.push(line);
             }
 
-            gameoflife::run_simulation_steps(starting_grid, None, 4, 100);
+            gameoflife::run_simulation_steps(starting_grid, None, 4, 10);
         });
     }
 
@@ -204,7 +204,7 @@ mod tests {
                 starting_grid.push(line);
             }
 
-            gameoflife::run_simulation_steps(starting_grid, None, 8, 100);
+            gameoflife::run_simulation_steps(starting_grid, None, 8, 10);
         });
     }
 }
