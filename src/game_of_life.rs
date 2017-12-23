@@ -10,7 +10,7 @@ mod gameoflife;
 
 use self::rand::distributions::IndependentSample;
 use ncurses::*;
-
+use std::cmp;
 
 pub fn game_of_life () {
     initscr();
@@ -22,7 +22,10 @@ pub fn game_of_life () {
     ncurses::getch();
     ncurses::timeout(-1);
 
-    let (n, m) = (60, 30);
+    let (mut x, mut y) = (0, 0);
+    ncurses::getmaxyx(ncurses::stdscr(), &mut y, &mut x);
+
+    let (n, m) = (cmp::min(60, n-4), cmp::min(30, n-2));
 
     let watcher = gameoflife::watcher::TerminalWatcher::new(60, 30);
 
@@ -35,9 +38,9 @@ pub fn game_of_life () {
         starting_grid.push(line);
     }
 
-
-
     let (mut ofs_y, mut ofs_x, mut win) = watcher.render_grid(gameoflife::grid_to_data(&starting_grid));
+    ncurses::mvprintw(0, y/2 - 3, "Game of life");
+
     keypad(win , true);
     mousemask((ncurses::BUTTON1_PRESSED  | ncurses::REPORT_MOUSE_POSITION) as u64, None);
     refresh();
