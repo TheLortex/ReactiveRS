@@ -37,3 +37,7 @@ required-features = ["trafficsim"]
 name = "gameoflife"
 path = "src/game_of_life.rs"
 required-features = ["gameoflife"]
+
+[[bin]]
+name = "example"
+path = "src/example.rs"
